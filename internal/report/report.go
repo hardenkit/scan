@@ -5,31 +5,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/hardenkit/scan/internal/aistack"
 	"github.com/hardenkit/scan/internal/finding"
 	"github.com/hardenkit/scan/internal/issue"
+	"github.com/hardenkit/scan/internal/kube"
 )
 
 // Result is everything one scan produced.
 type Result struct {
-	Target   string            `json:"target"`
-	Packages int               `json:"packages"`
-	Upgrades []finding.Upgrade `json:"upgrades"`
-	Findings []finding.Finding `json:"findings"`
-	Sources  []string          `json:"sources"`
-	Database string            `json:"database_built,omitempty"` // when the prebuilt database was generated
-	AIStack  *aistack.Report   `json:"ai_stack,omitempty"`
-	Warnings []string          `json:"warnings,omitempty"`
+	Target     string            `json:"target"`
+	Packages   int               `json:"packages"`
+	Upgrades   []finding.Upgrade `json:"upgrades"`
+	Findings   []finding.Finding `json:"findings"`
+	Sources    []string          `json:"sources"`
+	Database   string            `json:"database_built,omitempty"` // when the prebuilt database was generated
+	AIStack    *aistack.Report   `json:"ai_stack,omitempty"`
+	Kubernetes *kube.Report      `json:"kubernetes,omitempty"`
+	Warnings   []string          `json:"warnings,omitempty"`
 }
 
-func (r Result) aiIssues() int {
-	if r.AIStack == nil {
-		return 0
+// configCounts is the header summary of configuration issues, e.g.
+// " · 3 AI-stack issues · 5 Kubernetes issues".
+func (r Result) configCounts() string {
+	var b strings.Builder
+	for _, s := range sections(r) {
+		if len(s.issues) > 0 {
+			fmt.Fprintf(&b, " · %d %s issues", len(s.issues), s.name)
+		}
 	}
-	return len(r.AIStack.Issues)
+	return b.String()
 }
 
 // JSON writes r as indented JSON.
@@ -55,9 +63,7 @@ func Markdown(w io.Writer, r Result) error {
 	if exploited > 0 {
 		fmt.Fprintf(w, " · %d exploited in the wild", exploited)
 	}
-	if n := r.aiIssues(); n > 0 {
-		fmt.Fprintf(w, " · %d AI-stack issues", n)
-	}
+	fmt.Fprint(w, r.configCounts())
 	fmt.Fprintf(w, "** in `%s`\n\n", r.Target)
 	for _, warn := range r.Warnings {
 		fmt.Fprintf(w, "> [!WARNING]\n> %s\n\n", md(warn))
@@ -67,8 +73,8 @@ func Markdown(w io.Writer, r Result) error {
 	} else {
 		markdownFindings(w, r)
 	}
-	if r.AIStack != nil {
-		markdownAI(w, r.AIStack)
+	for _, sec := range sections(r) {
+		markdownSection(w, sec)
 	}
 	fmt.Fprintf(w, "\n<sub>Data: %s</sub>\n", strings.Join(r.Sources, ", "))
 	return nil
@@ -122,27 +128,45 @@ func markdownFindings(w io.Writer, r Result) {
 	fmt.Fprintln(w, "\n</details>")
 }
 
-func markdownAI(w io.Writer, a *aistack.Report) {
-	if len(a.Components) == 0 && len(a.MCPServers) == 0 && len(a.Models) == 0 && len(a.Issues) == 0 {
-		return
+// section is a group of configuration issues (AI stack, Kubernetes) with
+// the inventory they were found in.
+type section struct {
+	title, inventoryTitle, name string
+	inventory                   [][2]string
+	issues                      []issue.Issue
+}
+
+func sections(r Result) []section {
+	var out []section
+	if a := r.AIStack; a != nil {
+		if inv := inventoryLines(a); len(inv) > 0 || len(a.Issues) > 0 {
+			out = append(out, section{"AI stack", "AI inventory", "AI-stack", inv, a.Issues})
+		}
 	}
-	fmt.Fprint(w, "\n### AI stack\n\n")
-	if len(a.Issues) > 0 {
+	if k := r.Kubernetes; k != nil {
+		out = append(out, section{"Kubernetes", "Kubernetes inventory", "Kubernetes", kubeLines(k), k.Issues})
+	}
+	return out
+}
+
+func markdownSection(w io.Writer, s section) {
+	fmt.Fprintf(w, "\n### %s\n\n", s.title)
+	if len(s.issues) > 0 {
 		fmt.Fprintln(w, "| Severity | Issue | File | Fix |")
 		fmt.Fprintln(w, "|:--|:--|:--|:--|")
-		for i, is := range a.Issues {
+		for i, is := range s.issues {
 			if i == markdownRowLimit {
-				fmt.Fprintf(w, "\n%d more not shown; run `hardenkit scan` locally for the full list.\n", len(a.Issues)-i)
+				fmt.Fprintf(w, "\n%d more not shown; run `hardenkit scan` locally for the full list.\n", len(s.issues)-i)
 				break
 			}
 			fmt.Fprintf(w, "| %s | %s | `%s` | %s |\n", is.Severity, md(is.Title), md(location(is)), md(is.Fix))
 		}
 		fmt.Fprintln(w)
 	} else {
-		fmt.Fprint(w, "No AI-stack issues found.\n\n")
+		fmt.Fprintf(w, "No %s issues found.\n\n", s.name)
 	}
-	fmt.Fprint(w, "<details><summary>AI inventory</summary>\n\n")
-	for _, line := range inventoryLines(a) {
+	fmt.Fprintf(w, "<details><summary>%s</summary>\n\n", s.inventoryTitle)
+	for _, line := range s.inventory {
 		fmt.Fprintf(w, "- **%s:** %s\n", line[0], md(line[1]))
 	}
 	fmt.Fprintln(w, "\n</details>")
@@ -208,9 +232,7 @@ func Text(w io.Writer, r Result, verbose bool) error {
 	if exploited > 0 {
 		fmt.Fprintf(w, " · %d exploited in the wild", exploited)
 	}
-	if n := r.aiIssues(); n > 0 {
-		fmt.Fprintf(w, " · %d AI-stack issues", n)
-	}
+	fmt.Fprint(w, r.configCounts())
 	fmt.Fprintln(w)
 
 	for _, warn := range r.Warnings {
@@ -222,8 +244,8 @@ func Text(w io.Writer, r Result, verbose bool) error {
 	} else if err := textFindings(w, r, verbose); err != nil {
 		return err
 	}
-	if r.AIStack != nil {
-		textAI(w, r.AIStack)
+	for _, sec := range sections(r) {
+		textSection(w, sec, verbose)
 	}
 
 	fmt.Fprintf(w, "\nData: %s", strings.Join(r.Sources, ", "))
@@ -303,23 +325,55 @@ func textFindings(w io.Writer, r Result, verbose bool) error {
 	return nil
 }
 
-func textAI(w io.Writer, a *aistack.Report) {
-	lines := inventoryLines(a)
-	if len(lines) == 0 && len(a.Issues) == 0 {
-		return
-	}
-	fmt.Fprintln(w, "\nAI STACK")
-	for _, line := range lines {
+func textSection(w io.Writer, s section, verbose bool) {
+	fmt.Fprintf(w, "\n%s\n", strings.ToUpper(s.title))
+	for _, line := range s.inventory {
 		fmt.Fprintf(w, "  %s: %s\n", line[0], line[1])
 	}
-	if len(a.Issues) == 0 {
-		fmt.Fprintln(w, "\nNo AI-stack issues found.")
+	if len(s.issues) == 0 {
+		fmt.Fprintf(w, "\nNo %s issues found.\n", s.name)
 		return
 	}
 	fmt.Fprintln(w)
-	for _, is := range a.Issues {
+	low := 0
+	for _, is := range s.issues {
+		if is.Severity == "LOW" && !verbose {
+			low++
+			continue
+		}
 		fmt.Fprintf(w, "%-8s  %s\n", is.Severity, location(is))
 		fmt.Fprintf(w, "          %s\n", is.Title)
 		fmt.Fprintf(w, "          Fix: %s\n", is.Fix)
 	}
+	if low > 0 {
+		fmt.Fprintf(w, "%d low-severity issues not shown; add -v to see them.\n", low)
+	}
+}
+
+// kubeLines summarizes the Kubernetes inventory as (label, items) pairs.
+func kubeLines(k *kube.Report) [][2]string {
+	var out [][2]string
+	if len(k.Resources) > 0 {
+		counts := map[string]int{}
+		var kinds []string
+		for _, res := range k.Resources {
+			if counts[res.Kind] == 0 {
+				kinds = append(kinds, res.Kind)
+			}
+			counts[res.Kind]++
+		}
+		sort.Strings(kinds)
+		var parts []string
+		for _, kind := range kinds {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[kind], kind))
+		}
+		out = append(out, [2]string{"Resources", strings.Join(parts, ", ")})
+	}
+	if len(k.Charts) > 0 {
+		out = append(out, [2]string{"Helm charts", strings.Join(k.Charts, ", ")})
+	}
+	if len(k.Images) > 0 {
+		out = append(out, [2]string{"Images", strings.Join(k.Images, ", ") + " (scan each with: hardenkit scan IMAGE)"})
+	}
+	return out
 }

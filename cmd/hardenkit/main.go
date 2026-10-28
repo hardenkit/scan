@@ -17,6 +17,8 @@ import (
 	"github.com/hardenkit/scan/internal/finding"
 	"github.com/hardenkit/scan/internal/httpx"
 	"github.com/hardenkit/scan/internal/inventory"
+	"github.com/hardenkit/scan/internal/issue"
+	"github.com/hardenkit/scan/internal/kube"
 	"github.com/hardenkit/scan/internal/osv"
 	"github.com/hardenkit/scan/internal/report"
 	"github.com/hardenkit/scan/internal/vulndb"
@@ -44,12 +46,14 @@ Flags:
   --format FORMAT      text (default), json, or markdown (for CI summaries)
   --fail-on LEVEL      exit 1 if any finding is at or above LEVEL:
                        kev, critical, high, medium, low (default: never fail).
-                       AI-stack issues count too, except for kev
+                       AI-stack and Kubernetes issues count too, except
+                       for kev
   --no-db              don't use the prebuilt database; query KEV, EPSS and
                        NVD live (slow without an NVD API key)
   --no-nvd             skip live CVSS lookups from NVD
   --no-ai              skip the AI-stack checks (MCP configs, model files,
                        risky model-loading code)
+  --no-k8s             skip the Kubernetes manifest and Helm chart checks
   --summary-file PATH  also append a Markdown report to PATH (e.g.
                        "$GITHUB_STEP_SUMMARY")
   -v, --verbose        show summaries, file locations and advisory links
@@ -58,6 +62,11 @@ The AI-stack checks list LLM SDKs, agent frameworks, vector databases, MCP
 servers and model files, and flag secrets and unpinned servers in MCP
 configs, model files that run code when loaded, and code such as
 trust_remote_code=True.
+
+The Kubernetes checks read manifests and Helm charts (rendered with "helm
+template" when helm is installed) and flag privileged pods, host access,
+gaps against the restricted Pod Security Standard, broad RBAC and committed
+Secrets.
 
 Severity scores, exploitation data (CISA KEV) and exploit likelihood (EPSS)
 come from a prebuilt database that is updated daily and cached locally.
@@ -106,6 +115,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	noNVD := fs.Bool("no-nvd", false, "")
 	noDB := fs.Bool("no-db", false, "")
 	noAI := fs.Bool("no-ai", false, "")
+	noK8s := fs.Bool("no-k8s", false, "")
 	summaryFile := fs.String("summary-file", "", "")
 	verbose := fs.Bool("verbose", false, "")
 	fs.BoolVar(verbose, "v", false, "")
@@ -284,6 +294,16 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		ai.Components = aistack.Components(pkgs)
 		result.AIStack = ai
 	}
+	if path := localPath(target); path != "" && !*noK8s {
+		k, err := kube.Scan(ctx, path)
+		if err != nil {
+			warn("Kubernetes checks failed: %v", err)
+		} else if k != nil {
+			logf("Checked %d Kubernetes resources ...", len(k.Resources))
+			result.Kubernetes = k
+			result.Warnings = append(result.Warnings, k.Warnings...)
+		}
+	}
 
 	switch *format {
 	case "json":
@@ -337,11 +357,19 @@ func failed(r report.Result, threshold string) bool {
 			return true
 		}
 	}
-	if r.AIStack != nil && threshold != "KEV" {
-		for _, is := range r.AIStack.Issues {
-			if finding.AtLeast(is.Severity, threshold) {
-				return true
-			}
+	if threshold == "KEV" {
+		return false
+	}
+	var issues []issue.Issue
+	if r.AIStack != nil {
+		issues = append(issues, r.AIStack.Issues...)
+	}
+	if r.Kubernetes != nil {
+		issues = append(issues, r.Kubernetes.Issues...)
+	}
+	for _, is := range issues {
+		if finding.AtLeast(is.Severity, threshold) {
+			return true
 		}
 	}
 	return false
