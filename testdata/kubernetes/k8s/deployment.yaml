@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+        - name: web
+          image: nginx:latest
+          ports:
+            - containerPort: 80
+          env:
+            - name: SESSION_SECRET
+              value: 9f2c4e7a1b3d5f8e0a6c
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-agent
+spec:
+  selector:
+    matchLabels: {app: node-agent}
+  template:
+    metadata:
+      labels: {app: node-agent}
+    spec:
+      hostPID: true
+      containers:
+        - name: agent
+          image: ghcr.io/acme/node-agent:2.3.0
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - {name: runtime, mountPath: /run/containerd/containerd.sock}
+      volumes:
+        - name: runtime
+          hostPath:
+            path: /run/containerd/containerd.sock
