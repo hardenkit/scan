@@ -236,13 +236,12 @@ func scan(args []string, stdout, stderr io.Writer) int {
 			result.Sources = append(result.Sources, "FIRST EPSS")
 		}
 
-		if !*noNVD {
-			key := os.Getenv("HARDENKIT_NVD_API_KEY")
-			if key == "" && len(cves) > 10 {
-				logf("Fetching CVSS scores from NVD for %d CVEs without an API key; this takes about %d seconds (set HARDENKIT_NVD_API_KEY or pass --no-nvd).", len(cves), len(cves)*6)
-			} else {
-				logf("Fetching CVSS scores from NVD ...")
-			}
+		key := os.Getenv("HARDENKIT_NVD_API_KEY")
+		if !*noNVD && key == "" && len(cves) > 10 {
+			// Keyless NVD allows one request every 6 seconds; don't stall the scan.
+			warn("skipped NVD CVSS scores for %d CVEs: live lookups without HARDENKIT_NVD_API_KEY would take about %d minutes", len(cves), (len(cves)*6+59)/60)
+		} else if !*noNVD {
+			logf("Fetching CVSS scores from NVD ...")
 			if cvss, err = enrich.NVD(ctx, cves, key); err != nil {
 				warn("%v", err)
 			}
