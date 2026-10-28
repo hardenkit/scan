@@ -5,6 +5,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/hardenkit/scan/internal/issue"
 )
 
 // sourceRules are risky settings in Python code that loads models or data.
@@ -58,7 +60,7 @@ func checkSource(r *Report, file, rel string) {
 		code, _, _ := strings.Cut(text, "#")
 		for _, rule := range sourceRules {
 			if rule.pattern.MatchString(code) {
-				r.Issues = append(r.Issues, Issue{Rule: rule.rule, Severity: rule.severity, File: rel, Line: line, Title: rule.title, Fix: rule.fix})
+				r.Issues = append(r.Issues, issue.Issue{Rule: rule.rule, Severity: rule.severity, File: rel, Line: line, Title: rule.title, Fix: rule.fix})
 			}
 		}
 	}

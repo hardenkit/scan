@@ -9,6 +9,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/hardenkit/scan/internal/issue"
+	"github.com/hardenkit/scan/internal/secret"
 )
 
 // isMCPConfig reports whether rel is a file MCP clients read servers from:
@@ -74,16 +77,16 @@ func checkMCP(r *Report, file, rel string) {
 		r.MCPServers = append(r.MCPServers, MCPServer{Name: name, File: rel, Command: strings.TrimSpace(e.Command + " " + strings.Join(args, " ")), URL: u})
 
 		add := func(rule, severity, title, fix string) {
-			r.Issues = append(r.Issues, Issue{Rule: rule, Severity: severity, File: rel, Title: fmt.Sprintf("MCP server %q: %s", name, title), Fix: fix})
+			r.Issues = append(r.Issues, issue.Issue{Rule: rule, Severity: severity, File: rel, Title: fmt.Sprintf("MCP server %q: %s", name, title), Fix: fix})
 		}
 		const secretFix = "Move the secret to an environment variable and reference it (for example \"${GITHUB_TOKEN}\"), then rotate it: anyone with this file has it."
 		for _, k := range sortedKeys(e.Env) {
-			if isLiteralSecret(k, fmt.Sprint(e.Env[k])) {
+			if secret.Literal(k, fmt.Sprint(e.Env[k])) {
 				add("mcp-hardcoded-secret", "HIGH", fmt.Sprintf("env %s holds a literal secret", k), secretFix)
 			}
 		}
 		for _, k := range sortedKeys(e.Headers) {
-			if isLiteralSecret(k, fmt.Sprint(e.Headers[k])) {
+			if secret.Literal(k, fmt.Sprint(e.Headers[k])) {
 				add("mcp-hardcoded-secret", "HIGH", fmt.Sprintf("header %s holds a literal secret", k), secretFix)
 			}
 		}
@@ -112,7 +115,7 @@ func checkMCPURL(raw string, add func(rule, severity, title, fix string), secret
 	}
 	for k, vs := range u.Query() {
 		for _, v := range vs {
-			if isLiteralSecret(k, v) {
+			if secret.Literal(k, v) {
 				add("mcp-hardcoded-secret", "HIGH", fmt.Sprintf("URL parameter %s holds a literal secret", k), secretFix)
 			}
 		}
@@ -166,7 +169,7 @@ func checkMCPCommand(command string, args []string, add func(rule, severity, tit
 }
 
 func checkPin(pinned func(string) bool, pkg string, add func(rule, severity, title, fix string), fix string) {
-	if pkg == "" || isLocalPath(pkg) || strings.Contains(pkg, "://") || pinned(pkg) {
+	if pkg == "" || secret.IsPath(pkg) || strings.Contains(pkg, "://") || pinned(pkg) {
 		return
 	}
 	add("mcp-unpinned-package", "MEDIUM", fmt.Sprintf("runs %s without a pinned version", pkg), fix)
@@ -310,59 +313,27 @@ func flagValue(args []string, name string) string {
 	return ""
 }
 
-func isLocalPath(s string) bool {
-	return strings.HasPrefix(s, ".") || strings.HasPrefix(s, "/") || strings.HasPrefix(s, "~") || strings.Contains(s, `\`)
-}
-
 var (
-	// Token formats with a recognizable prefix.
-	tokenPattern = regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_\w{30,}|glpat-[\w-]{20,}|xox[abpr]-[\w-]{10,}|AKIA[0-9A-Z]{16}|hf_[A-Za-z0-9]{30,}|AIza[0-9A-Za-z_-]{35}|sk_live_[0-9A-Za-z]{20,}|npm_[A-Za-z0-9]{36})\b`)
-	secretName   = regexp.MustCompile(`(?i)(key|token|secret|passw|pwd|auth|credential|cookie|bearer)`)
-	secretFlag   = regexp.MustCompile(`(?i)^--?[\w-]*(key|token|secret|password)[\w-]*$`)
-	pipeToShell  = regexp.MustCompile(`\|\s*(sh|bash|zsh|python3?|iex)\b`)
+	secretFlag  = regexp.MustCompile(`(?i)^--?[\w-]*(key|token|secret|password)[\w-]*$`)
+	pipeToShell = regexp.MustCompile(`\|\s*(sh|bash|zsh|python3?|iex)\b`)
 )
-
-// isLiteralSecret reports whether the value of a setting named name looks
-// like a real secret rather than an environment reference or a placeholder.
-func isLiteralSecret(name, value string) bool {
-	if tokenPattern.MatchString(value) {
-		return true
-	}
-	if !secretName.MatchString(name) {
-		return false
-	}
-	v := strings.TrimSpace(value)
-	v = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(v, "Bearer "), "Basic "))
-	if len(v) < 12 || strings.Contains(v, " ") {
-		return false
-	}
-	lower := strings.ToLower(v)
-	switch {
-	case strings.Contains(v, "${"), strings.HasPrefix(v, "$"), strings.Contains(v, "{{"), strings.HasPrefix(v, "%"),
-		strings.ContainsAny(v, "<>"), strings.Contains(lower, "your"), strings.Contains(lower, "xxxx"),
-		strings.Contains(lower, "changeme"), strings.Contains(lower, "example"), strings.Contains(lower, "placeholder"),
-		isLocalPath(v), strings.HasSuffix(lower, ".json"), strings.Contains(v, "://"):
-		return false
-	}
-	return true
-}
 
 // argHasSecret checks args[i] for a token, either on its own or as the value
 // of a flag such as --api-key=... or --token ....
 func argHasSecret(args []string, i int) bool {
 	a := args[i]
-	if tokenPattern.MatchString(a) {
+	if secret.HasToken(a) {
 		return true
 	}
 	if flag, val, ok := strings.Cut(a, "="); ok && secretFlag.MatchString(flag) {
-		return isLiteralSecret(flag, val)
+		return secret.Literal(flag, val)
 	}
 	if i > 0 && secretFlag.MatchString(args[i-1]) {
-		return isLiteralSecret(args[i-1], a)
+		return secret.Literal(args[i-1], a)
 	}
 	// mcp-remote style: --header "Authorization: Bearer ...".
 	if k, v, ok := strings.Cut(a, ":"); ok && i > 0 && args[i-1] == "--header" {
-		return isLiteralSecret(k, strings.TrimSpace(v))
+		return secret.Literal(k, strings.TrimSpace(v))
 	}
 	return false
 }

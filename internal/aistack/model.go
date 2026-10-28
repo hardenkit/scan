@@ -10,6 +10,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"github.com/hardenkit/scan/internal/issue"
 )
 
 // Model file formats by extension. Formats that can't run code (safetensors,
@@ -69,7 +71,7 @@ func checkModel(r *Report, file, rel string) {
 	}
 
 	add := func(rule, severity, title, fix string) {
-		r.Issues = append(r.Issues, Issue{Rule: rule, Severity: severity, File: rel, Title: title, Fix: fix})
+		r.Issues = append(r.Issues, issue.Issue{Rule: rule, Severity: severity, File: rel, Title: title, Fix: fix})
 	}
 	switch format {
 	case "pickle", "joblib", "dill", "pytorch":

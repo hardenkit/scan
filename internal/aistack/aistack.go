@@ -9,26 +9,17 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
+
+	"github.com/hardenkit/scan/internal/issue"
 )
 
 // Report is the AI-stack part of a scan.
 type Report struct {
-	Components []Component `json:"components"`
-	MCPServers []MCPServer `json:"mcp_servers"`
-	Models     []Model     `json:"models"`
-	Issues     []Issue     `json:"issues"`
-}
-
-// Issue is one risky configuration, model file or line of code.
-type Issue struct {
-	Rule     string `json:"rule"`
-	Severity string `json:"severity"` // CRITICAL, HIGH, MEDIUM or LOW
-	File     string `json:"file"`
-	Line     int    `json:"line,omitempty"`
-	Title    string `json:"title"`
-	Fix      string `json:"fix"`
+	Components []Component   `json:"components"`
+	MCPServers []MCPServer   `json:"mcp_servers"`
+	Models     []Model       `json:"models"`
+	Issues     []issue.Issue `json:"issues"`
 }
 
 // MCPServer is one server entry in an MCP client config.
@@ -48,7 +39,7 @@ type Model struct {
 
 // New returns an empty report; its lists encode as [] rather than null.
 func New() *Report {
-	return &Report{Components: []Component{}, MCPServers: []MCPServer{}, Models: []Model{}, Issues: []Issue{}}
+	return &Report{Components: []Component{}, MCPServers: []MCPServer{}, Models: []Model{}, Issues: []issue.Issue{}}
 }
 
 // Directories that hold installed dependencies or build output rather than
@@ -114,29 +105,6 @@ func Scan(ctx context.Context, root string) (*Report, error) {
 		}
 	}
 
-	sort.SliceStable(r.Issues, func(i, j int) bool {
-		a, b := r.Issues[i], r.Issues[j]
-		if ra, rb := rank(a.Severity), rank(b.Severity); ra != rb {
-			return ra > rb
-		}
-		if a.File != b.File {
-			return a.File < b.File
-		}
-		return a.Line < b.Line
-	})
+	issue.Sort(r.Issues)
 	return r, nil
-}
-
-func rank(severity string) int {
-	switch severity {
-	case "CRITICAL":
-		return 4
-	case "HIGH":
-		return 3
-	case "MEDIUM":
-		return 2
-	case "LOW":
-		return 1
-	}
-	return 0
 }

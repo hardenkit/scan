@@ -10,6 +10,7 @@ import (
 
 	"github.com/hardenkit/scan/internal/aistack"
 	"github.com/hardenkit/scan/internal/finding"
+	"github.com/hardenkit/scan/internal/issue"
 )
 
 // Result is everything one scan produced.
@@ -147,7 +148,7 @@ func markdownAI(w io.Writer, a *aistack.Report) {
 	fmt.Fprintln(w, "\n</details>")
 }
 
-func location(is aistack.Issue) string {
+func location(is issue.Issue) string {
 	if is.Line > 0 {
 		return fmt.Sprintf("%s:%d", is.File, is.Line)
 	}

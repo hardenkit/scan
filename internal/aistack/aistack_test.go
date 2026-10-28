@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/hardenkit/scan/internal/inventory"
+	"github.com/hardenkit/scan/internal/secret"
 )
 
 // Pickles of an object whose __reduce__ returns (os.system, ("echo pwned",)),
@@ -296,8 +297,8 @@ func TestIsLiteralSecret(t *testing.T) {
 		{"LOG_LEVEL", "a8f3k2m9q7w1z5x0", false},
 		{"AUTH_ENABLED", "true", false},
 	} {
-		if got := isLiteralSecret(c.name, c.value); got != c.want {
-			t.Errorf("isLiteralSecret(%q, %q) = %v, want %v", c.name, c.value, got, c.want)
+		if got := secret.Literal(c.name, c.value); got != c.want {
+			t.Errorf("secret.Literal(%q, %q) = %v, want %v", c.name, c.value, got, c.want)
 		}
 	}
 }
