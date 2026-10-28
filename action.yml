@@ -71,6 +71,13 @@ runs:
         echo "$dir/$name" >> "$GITHUB_PATH"
         echo "Installed hardenkit $version ($os/$arch)"
 
+        # Fetch the vulnerability database with the token, so it also works
+        # where the plain download URL needs authentication. If this fails the
+        # CLI downloads it itself or falls back to live sources.
+        if gh release download db --repo "$repo" --pattern enrichment.json.gz --dir "$dir/db" 2>/dev/null; then
+          echo "HARDENKIT_DB_URL=$dir/db/enrichment.json.gz" >> "$GITHUB_ENV"
+        fi
+
     - name: Scan
       shell: bash
       env:
