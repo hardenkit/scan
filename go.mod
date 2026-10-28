@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/anchore/syft v1.55.0
+	go.yaml.in/yaml/v3 v3.0.5
 	modernc.org/sqlite v1.60.1
 )
 
@@ -279,7 +280,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.46.0 // indirect
 	go.podman.io/image/v5 v5.41.2 // indirect
 	go.podman.io/storage v1.64.1 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
