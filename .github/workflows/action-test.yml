@@ -1,0 +1,43 @@
+name: Action test
+
+# Runs the published action against testdata/vulnerable after each release,
+# on every runner OS, and checks that it finds the exploited vulnerability.
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan a clean target (should pass)
+        uses: ./
+        with:
+          target: testdata/vulnerable/README.md
+          fail-on: high
+
+      - name: Scan vulnerable dependencies (should fail)
+        id: vulnerable
+        continue-on-error: true
+        uses: ./
+        with:
+          target: testdata/vulnerable
+          fail-on: kev
+
+      - name: Check the failing scan failed
+        shell: bash
+        run: |
+          [ "${{ steps.vulnerable.outcome }}" = failure ] || { echo "::error::expected the vulnerable scan to fail on --fail-on kev"; exit 1; }
