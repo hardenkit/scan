@@ -1,0 +1,86 @@
+name: hardenkit scan
+description: Find the vulnerabilities that matter in your dependencies and containers, and the upgrade that fixes them.
+author: HardenKit
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  target:
+    description: Directory, file, or container image to scan.
+    default: "."
+  fail-on:
+    description: Fail the step if any finding is at or above this level (kev, critical, high, medium, low). Empty never fails.
+    default: high
+  version:
+    description: hardenkit version to run (e.g. 0.1.0). Defaults to the version matching this action's tag, or the latest release.
+    default: ""
+  args:
+    description: Extra arguments passed to `hardenkit scan` (e.g. "--verbose").
+    default: ""
+  token:
+    description: Token used to download the release.
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install hardenkit
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        INPUT_VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        set -euo pipefail
+        repo=hardenkit/scan
+        version="${INPUT_VERSION#v}"
+        if [ -z "$version" ] && [[ "$ACTION_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+          version="${ACTION_REF#v}"
+        fi
+        if [ -z "$version" ]; then
+          # Newest version tag; skips the rolling "db" data release.
+          tag=$(gh release list --repo "$repo" --exclude-drafts --limit 30 --json tagName --jq '[.[] | select(.tagName | startswith("v"))][0].tagName')
+          [ -n "$tag" ] || { echo "::error::no hardenkit release found"; exit 1; }
+          version="${tag#v}"
+        fi
+
+        case "$RUNNER_OS" in
+          Linux) os=linux ;; macOS) os=darwin ;; Windows) os=windows ;;
+          *) echo "::error::unsupported runner OS $RUNNER_OS"; exit 1 ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64) arch=amd64 ;; ARM64) arch=arm64 ;;
+          *) echo "::error::unsupported runner architecture $RUNNER_ARCH"; exit 1 ;;
+        esac
+        ext=tar.gz; [ "$os" = windows ] && ext=zip
+        name="hardenkit_${version}_${os}_${arch}"
+
+        dir="$RUNNER_TEMP/hardenkit"
+        rm -rf "$dir" && mkdir -p "$dir" && cd "$dir"
+        gh release download "v$version" --repo "$repo" --pattern "$name.$ext" --pattern checksums.txt
+        grep " $name.$ext\$" checksums.txt > expected.txt
+        if command -v sha256sum >/dev/null; then sha256sum -c expected.txt; else shasum -a 256 -c expected.txt; fi
+        if [ "$ext" = tar.gz ]; then
+          tar -xzf "$name.tar.gz"
+        elif command -v unzip >/dev/null; then
+          unzip -q "$name.zip"
+        else
+          7z x -y "$name.zip" >/dev/null # Windows runners ship 7-Zip
+        fi
+        echo "$dir/$name" >> "$GITHUB_PATH"
+        echo "Installed hardenkit $version ($os/$arch)"
+
+    - name: Scan
+      shell: bash
+      env:
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_ARGS: ${{ inputs.args }}
+      run: |
+        set -euo pipefail
+        flags=(--summary-file "$GITHUB_STEP_SUMMARY")
+        [ -n "$INPUT_FAIL_ON" ] && flags+=(--fail-on "$INPUT_FAIL_ON")
+        # Word-splitting of INPUT_ARGS is intended: it holds extra flags.
+        # shellcheck disable=SC2086
+        hardenkit scan "${flags[@]}" $INPUT_ARGS "$INPUT_TARGET"
