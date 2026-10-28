@@ -12,6 +12,10 @@ var (
 	token = regexp.MustCompile(`\b(sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_\w{30,}|glpat-[\w-]{20,}|xox[abpr]-[\w-]{10,}|AKIA[0-9A-Z]{16}|hf_[A-Za-z0-9]{30,}|AIza[0-9A-Za-z_-]{35}|sk_live_[0-9A-Za-z]{20,}|npm_[A-Za-z0-9]{36})\b`)
 	// Setting names that usually hold a secret.
 	name = regexp.MustCompile(`(?i)(key|token|secret|passw|pwd|auth|credential|cookie|bearer)`)
+	// Names that refer to a secret rather than hold it (DB_SECRET_NAME, KEY_FILE).
+	reference = regexp.MustCompile(`(?i)[_.-]?(name|id|file|path|dir|url|uri|arn|ref|region|endpoint|version|type|mode|enabled|length|ttl)$`)
+	// Placeholders in the style of an environment variable name (API_KEY_VALUE).
+	placeholder = regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$`)
 )
 
 // HasToken reports whether s contains a token in a well-known format.
@@ -23,7 +27,7 @@ func Literal(key, value string) bool {
 	if token.MatchString(value) {
 		return true
 	}
-	if !name.MatchString(key) {
+	if !name.MatchString(key) || reference.MatchString(key) {
 		return false
 	}
 	v := strings.TrimSpace(value)
@@ -36,7 +40,7 @@ func Literal(key, value string) bool {
 	case strings.Contains(v, "${"), strings.HasPrefix(v, "$"), strings.Contains(v, "{{"), strings.HasPrefix(v, "%"),
 		strings.ContainsAny(v, "<>"), strings.Contains(lower, "your"), strings.Contains(lower, "xxxx"),
 		strings.Contains(lower, "changeme"), strings.Contains(lower, "example"), strings.Contains(lower, "placeholder"),
-		IsPath(v), strings.HasSuffix(lower, ".json"), strings.Contains(v, "://"):
+		IsPath(v), strings.HasSuffix(lower, ".json"), strings.Contains(v, "://"), placeholder.MatchString(v):
 		return false
 	}
 	return true

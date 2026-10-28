@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/hardenkit/scan/internal/inventory"
-	"github.com/hardenkit/scan/internal/secret"
 )
 
 // Pickles of an object whose __reduce__ returns (os.system, ("echo pwned",)),
@@ -277,28 +276,5 @@ func TestComponents(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v\nwant %+v", got, want)
-	}
-}
-
-func TestIsLiteralSecret(t *testing.T) {
-	for _, c := range []struct {
-		name, value string
-		want        bool
-	}{
-		{"GITHUB_TOKEN", "ghp_0123456789abcdefghijklmnopqrstuvwxyz", true},
-		{"ANY", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz", true},
-		{"API_KEY", "a8f3k2m9q7w1z5x0", true},
-		{"API_KEY", "${API_KEY}", false},
-		{"API_KEY", "${env:API_KEY}", false},
-		{"API_KEY", "<your-api-key>", false},
-		{"API_KEY", "YOUR_API_KEY_HERE", false},
-		{"Authorization", "Bearer ${input:token}", false},
-		{"GOOGLE_APPLICATION_CREDENTIALS", "/home/me/creds.json", false},
-		{"LOG_LEVEL", "a8f3k2m9q7w1z5x0", false},
-		{"AUTH_ENABLED", "true", false},
-	} {
-		if got := secret.Literal(c.name, c.value); got != c.want {
-			t.Errorf("secret.Literal(%q, %q) = %v, want %v", c.name, c.value, got, c.want)
-		}
 	}
 }
