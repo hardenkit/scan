@@ -105,42 +105,59 @@ func NVD(ctx context.Context, cves []string, apiKey string) (map[string]CVSS, er
 			case <-time.After(pace):
 			}
 		}
-		var resp struct {
-			Vulnerabilities []struct {
-				CVE struct {
-					Metrics struct {
-						V40 []nvdMetric `json:"cvssMetricV40"`
-						V31 []nvdMetric `json:"cvssMetricV31"`
-						V30 []nvdMetric `json:"cvssMetricV30"`
-						V2  []nvdMetric `json:"cvssMetricV2"`
-					} `json:"metrics"`
-				} `json:"cve"`
-			} `json:"vulnerabilities"`
-		}
+		var resp nvdPage
 		if err := httpx.GetJSON(ctx, nvdURL+"?cveId="+url.QueryEscape(id), header, &resp); err != nil {
 			return out, fmt.Errorf("NVD: %w", err)
 		}
 		if len(resp.Vulnerabilities) == 0 {
 			continue
 		}
-		m := resp.Vulnerabilities[0].CVE.Metrics
-		for _, set := range [][]nvdMetric{m.V40, m.V31, m.V30, m.V2} {
-			if best, ok := pickMetric(set); ok {
-				sev := best.CVSSData.BaseSeverity
-				if sev == "" {
-					sev = best.BaseSeverity
-				}
-				out[id] = CVSS{
-					Version:  best.CVSSData.Version,
-					Score:    best.CVSSData.BaseScore,
-					Severity: strings.ToUpper(sev),
-					Vector:   best.CVSSData.VectorString,
-				}
-				break
-			}
+		if c, ok := resp.Vulnerabilities[0].CVE.Metrics.best(); ok {
+			out[id] = c
 		}
 	}
 	return out, nil
+}
+
+// nvdPage is one response from the NVD CVE API.
+type nvdPage struct {
+	ResultsPerPage  int `json:"resultsPerPage"`
+	StartIndex      int `json:"startIndex"`
+	TotalResults    int `json:"totalResults"`
+	Vulnerabilities []struct {
+		CVE struct {
+			ID           string     `json:"id"`
+			VulnStatus   string     `json:"vulnStatus"`
+			LastModified string     `json:"lastModified"`
+			Metrics      nvdMetrics `json:"metrics"`
+		} `json:"cve"`
+	} `json:"vulnerabilities"`
+}
+
+type nvdMetrics struct {
+	V40 []nvdMetric `json:"cvssMetricV40"`
+	V31 []nvdMetric `json:"cvssMetricV31"`
+	V30 []nvdMetric `json:"cvssMetricV30"`
+	V2  []nvdMetric `json:"cvssMetricV2"`
+}
+
+// best returns the newest CVSS version available, preferring NVD's own score.
+func (m nvdMetrics) best() (CVSS, bool) {
+	for _, set := range [][]nvdMetric{m.V40, m.V31, m.V30, m.V2} {
+		if b, ok := pickMetric(set); ok {
+			sev := b.CVSSData.BaseSeverity
+			if sev == "" {
+				sev = b.BaseSeverity
+			}
+			return CVSS{
+				Version:  b.CVSSData.Version,
+				Score:    b.CVSSData.BaseScore,
+				Severity: strings.ToUpper(sev),
+				Vector:   b.CVSSData.VectorString,
+			}, true
+		}
+	}
+	return CVSS{}, false
 }
 
 type nvdMetric struct {
