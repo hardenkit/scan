@@ -13,6 +13,8 @@ Most scanners hand you a list of hundreds of CVEs. `hardenkit scan` ranks them b
 
 Then it collapses them into an **upgrade plan**: one line per package with the single version that resolves every fixable finding.
 
+It also checks your **AI stack**: the LLM SDKs, agent frameworks, vector databases, MCP servers and model files in the project, and the settings that let one of them take over a machine.
+
 > Status: early development. Not yet released.
 
 ## Usage
@@ -24,9 +26,10 @@ hardenkit scan alpine:3.19          # scan a container image
 hardenkit scan --format json .      # machine-readable output
 hardenkit scan --fail-on high .     # exit 1 on high/critical or exploited findings (for CI)
 hardenkit scan -v .                 # include summaries, file locations and advisory links
+hardenkit scan --no-ai .            # skip the AI-stack checks
 ```
 
-Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` the scan itself failed.
+Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` the scan itself failed. AI-stack issues count toward `--fail-on` at their severity, except with `--fail-on kev`, which only fails on exploited vulnerabilities.
 
 ## Install
 
@@ -71,6 +74,27 @@ Packages are found with [Syft](https://github.com/anchore/syft), which covers np
 | [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | Vulnerabilities exploited in the wild |
 | [FIRST EPSS](https://www.first.org/epss/) | Probability of exploitation in the next 30 days |
 | [NVD](https://nvd.nist.gov) | CVSS scores |
+
+### AI stack
+
+The scan lists the AI parts of the project (LLM APIs, agent frameworks, vector databases, ML frameworks, MCP SDKs, MCP servers and model files) and flags:
+
+| Check | Severity | What it finds |
+|:------|:---------|:--------------|
+| `model-code-execution` | Critical | Pickle-based model files (`.pkl`, `.pt`, `.pth`, `.bin`, `.ckpt`, `.joblib`) that import `os`, `subprocess`, `eval` and similar, so loading them runs code. Files are parsed, never loaded. |
+| `mcp-hardcoded-secret` | High | API keys and tokens written into MCP configs (`env`, `headers`, arguments, URLs) instead of referenced from the environment |
+| `mcp-insecure-transport` | High | Remote MCP servers over plain `http://` |
+| `mcp-unsafe-container` | High | MCP servers run with `--privileged`, host networking, the Docker socket or the host root mounted |
+| `mcp-remote-script` | High | MCP servers started with `curl ... \| sh` |
+| `code-dangerous-deserialization` | High | `allow_dangerous_deserialization=True` (LangChain) |
+| `model-keras-lambda` | High / Medium | Keras models with Lambda layers, which run embedded Python |
+| `mcp-unpinned-package` | Medium | MCP servers run through `npx`, `uvx`, `pipx` or `docker` without a pinned version, or with `@latest` |
+| `code-trust-remote-code` | Medium | `trust_remote_code=True` (Hugging Face Transformers) |
+| `code-unsafe-torch-load` | Medium | `torch.load(..., weights_only=False)` |
+| `model-unverified` | Medium | Pickle model files that couldn't be fully parsed |
+| `model-pickle-format` | Low | Other pickle-based model files; safetensors can't run code |
+
+MCP configs are read from `.mcp.json` (Claude Code), `.cursor/mcp.json`, `.vscode/mcp.json`, `mcp_config.json` (Windsurf), `claude_desktop_config.json` and `.gemini/settings.json`. Secrets are never printed. Config, model and code checks run on directories and files; for container images only the package inventory is reported.
 
 ## Attribution
 
