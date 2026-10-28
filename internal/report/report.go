@@ -29,6 +29,85 @@ func JSON(w io.Writer, r Result) error {
 	return enc.Encode(r)
 }
 
+// markdownRowLimit caps the findings table; GitHub step summaries are limited to 1 MiB.
+const markdownRowLimit = 100
+
+// Markdown writes a GitHub-flavored Markdown report, for CI step summaries and PR comments.
+func Markdown(w io.Writer, r Result) error {
+	exploited := 0
+	for _, f := range r.Findings {
+		if f.KEV != nil {
+			exploited++
+		}
+	}
+	fmt.Fprintf(w, "## hardenkit scan\n\n")
+	fmt.Fprintf(w, "**%d packages · %d vulnerabilities", r.Packages, len(r.Findings))
+	if exploited > 0 {
+		fmt.Fprintf(w, " · %d exploited in the wild", exploited)
+	}
+	fmt.Fprintf(w, "** in `%s`\n\n", r.Target)
+	for _, warn := range r.Warnings {
+		fmt.Fprintf(w, "> [!WARNING]\n> %s\n\n", md(warn))
+	}
+	if len(r.Findings) == 0 {
+		fmt.Fprintln(w, "No known vulnerabilities found.")
+		return nil
+	}
+
+	fmt.Fprint(w, "### Upgrade plan\n\n")
+	fmt.Fprintln(w, "| Priority | Package | Installed | Upgrade to | Fixes |")
+	fmt.Fprintln(w, "|:--|:--|:--|:--|--:|")
+	for _, u := range r.Upgrades {
+		to := "no fix yet"
+		if u.UpgradeTo != "" {
+			to = "`" + u.UpgradeTo + "`"
+		}
+		fixes := fmt.Sprint(u.Fixes)
+		if u.Unfixed > 0 {
+			fixes += fmt.Sprintf(" (+%d without a fix)", u.Unfixed)
+		}
+		fmt.Fprintf(w, "| %s | `%s` | `%s` | %s | %s |\n", u.Priority, md(u.Package.Name), md(u.Package.Version), to, fixes)
+	}
+
+	fmt.Fprint(w, "\n<details><summary>All findings</summary>\n\n")
+	fmt.Fprintln(w, "| Priority | Vulnerability | Package | Fix | Severity | EPSS |")
+	fmt.Fprintln(w, "|:--|:--|:--|:--|:--|--:|")
+	for i, f := range r.Findings {
+		if i == markdownRowLimit {
+			fmt.Fprintf(w, "\n%d more not shown; run `hardenkit scan` locally for the full list.\n", len(r.Findings)-i)
+			break
+		}
+		id := f.ID
+		if strings.HasPrefix(id, "CVE-") {
+			id = fmt.Sprintf("[%s](https://osv.dev/vulnerability/%s)", id, id)
+		}
+		if f.KEV != nil {
+			id += " **(exploited)**"
+		}
+		fix := "no fix yet"
+		if f.FixedIn != "" {
+			fix = "`" + f.FixedIn + "`"
+		}
+		sev := f.Severity
+		if f.CVSS != nil {
+			sev = fmt.Sprintf("%s %.1f", sev, f.CVSS.Score)
+		}
+		epss := "–"
+		if f.EPSS != nil {
+			epss = fmt.Sprintf("%.1f%%", *f.EPSS*100)
+		}
+		fmt.Fprintf(w, "| %s | %s | `%s@%s` | %s | %s | %s |\n", f.Priority, id, md(f.Package.Name), md(f.Package.Version), fix, sev, epss)
+	}
+	fmt.Fprintln(w, "\n</details>")
+	fmt.Fprintf(w, "\n<sub>Data: %s</sub>\n", strings.Join(r.Sources, ", "))
+	return nil
+}
+
+// md escapes characters that would break a Markdown table cell.
+func md(s string) string {
+	return strings.NewReplacer("|", "\\|", "\n", " ", "`", "'").Replace(s)
+}
+
 // Text writes a ranked, human-readable report.
 func Text(w io.Writer, r Result, verbose bool) error {
 	exploited := 0

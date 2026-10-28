@@ -40,12 +40,14 @@ Target is a directory (default "."), a file, or a container image such as
 "alpine:3.19" or "registry:ghcr.io/org/app:latest".
 
 Flags:
-  --format text|json   output format (default text)
+  --format FORMAT      text (default), json, or markdown (for CI summaries)
   --fail-on LEVEL      exit 1 if any finding is at or above LEVEL:
                        kev, critical, high, medium, low (default: never fail)
   --no-db              don't use the prebuilt database; query KEV, EPSS and
                        NVD live (slow without an NVD API key)
   --no-nvd             skip live CVSS lookups from NVD
+  --summary-file PATH  also append a Markdown report to PATH (e.g.
+                       "$GITHUB_STEP_SUMMARY")
   -v, --verbose        show summaries, file locations and advisory links
 
 Severity scores, exploitation data (CISA KEV) and exploit likelihood (EPSS)
@@ -94,13 +96,14 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	failOn := fs.String("fail-on", "", "")
 	noNVD := fs.Bool("no-nvd", false, "")
 	noDB := fs.Bool("no-db", false, "")
+	summaryFile := fs.String("summary-file", "", "")
 	verbose := fs.Bool("verbose", false, "")
 	fs.BoolVar(verbose, "v", false, "")
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
-	if *format != "text" && *format != "json" {
-		fmt.Fprintf(stderr, "--format must be text or json, got %q\n", *format)
+	if *format != "text" && *format != "json" && *format != "markdown" {
+		fmt.Fprintf(stderr, "--format must be text, json or markdown, got %q\n", *format)
 		return exitError
 	}
 	threshold := strings.ToUpper(*failOn)
@@ -258,14 +261,23 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		result.Upgrades = []finding.Upgrade{}
 	}
 
-	if *format == "json" {
+	switch *format {
+	case "json":
 		err = report.JSON(stdout, result)
-	} else {
+	case "markdown":
+		err = report.Markdown(stdout, result)
+	default:
 		err = report.Text(stdout, result, *verbose)
 	}
 	if err != nil {
 		logf("error: %v", err)
 		return exitError
+	}
+	if *summaryFile != "" {
+		if err := appendMarkdown(*summaryFile, result); err != nil {
+			logf("error: write summary: %v", err)
+			return exitError
+		}
 	}
 	if ctx.Err() != nil {
 		return exitError
@@ -276,6 +288,20 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		return exitFindings
 	}
 	return exitOK
+}
+
+// appendMarkdown appends a Markdown report to path; GitHub's step summary
+// file is shared by every step, so it must be appended to, not replaced.
+func appendMarkdown(path string, r report.Result) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if err := report.Markdown(f, r); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func failed(fs []finding.Finding, threshold string) bool {
