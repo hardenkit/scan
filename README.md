@@ -28,13 +28,17 @@ hardenkit scan -v .                 # include summaries, file locations and advi
 
 Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` the scan itself failed.
 
-### NVD API key (optional)
+### Vulnerability database
 
-CVSS scores come from the [National Vulnerability Database](https://nvd.nist.gov/developers/request-an-api-key). Without a key NVD allows 5 requests per 30 seconds, which makes large scans slow. With a key it's 50.
+Severity scores (NVD CVSS), exploitation data (CISA KEV) and exploit likelihood (EPSS) for every CVE are rebuilt every night and published as a small download. The CLI fetches it once a day and caches it, so scans take seconds and need no API keys. Package matching itself always queries OSV.dev live.
+
+If the database can't be downloaded, the CLI falls back to querying those sources live. `--no-db` forces that. For live NVD lookups an [NVD API key](https://nvd.nist.gov/developers/request-an-api-key) raises the rate limit from 5 to 50 requests per 30 seconds:
 
 ```bash
-export HARDENKIT_NVD_API_KEY=your-key   # or pass --no-nvd to skip CVSS scores
+export HARDENKIT_NVD_API_KEY=your-key
 ```
+
+`HARDENKIT_DB_URL` points the CLI at a different database (an https URL or a local file), for example a mirror inside an air-gapped network.
 
 ## What it checks
 
@@ -47,12 +51,17 @@ Packages are found with [Syft](https://github.com/anchore/syft), which covers np
 | [FIRST EPSS](https://www.first.org/epss/) | Probability of exploitation in the next 30 days |
 | [NVD](https://nvd.nist.gov) | CVSS scores |
 
+## Attribution
+
+This product uses the NVD API but is not endorsed or certified by the NVD. EPSS scores are provided by [FIRST](https://www.first.org/epss/). Known exploited vulnerabilities come from [CISA's KEV catalog](https://www.cisa.gov/known-exploited-vulnerabilities-catalog). Vulnerability matching uses [OSV.dev](https://osv.dev).
+
 ## Build
 
 Requires Go (see `go.mod` for the version).
 
 ```bash
 make build    # bin/hardenkit
+go run ./cmd/vulndb-build --window 72h --out db.json.gz   # small test database
 make check    # vet, tests, formatting
 ```
 
