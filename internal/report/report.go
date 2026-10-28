@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/hardenkit/scan/internal/aistack"
 	"github.com/hardenkit/scan/internal/finding"
 )
 
@@ -19,7 +20,15 @@ type Result struct {
 	Findings []finding.Finding `json:"findings"`
 	Sources  []string          `json:"sources"`
 	Database string            `json:"database_built,omitempty"` // when the prebuilt database was generated
+	AIStack  *aistack.Report   `json:"ai_stack,omitempty"`
 	Warnings []string          `json:"warnings,omitempty"`
+}
+
+func (r Result) aiIssues() int {
+	if r.AIStack == nil {
+		return 0
+	}
+	return len(r.AIStack.Issues)
 }
 
 // JSON writes r as indented JSON.
@@ -45,15 +54,26 @@ func Markdown(w io.Writer, r Result) error {
 	if exploited > 0 {
 		fmt.Fprintf(w, " · %d exploited in the wild", exploited)
 	}
+	if n := r.aiIssues(); n > 0 {
+		fmt.Fprintf(w, " · %d AI-stack issues", n)
+	}
 	fmt.Fprintf(w, "** in `%s`\n\n", r.Target)
 	for _, warn := range r.Warnings {
 		fmt.Fprintf(w, "> [!WARNING]\n> %s\n\n", md(warn))
 	}
 	if len(r.Findings) == 0 {
 		fmt.Fprintln(w, "No known vulnerabilities found.")
-		return nil
+	} else {
+		markdownFindings(w, r)
 	}
+	if r.AIStack != nil {
+		markdownAI(w, r.AIStack)
+	}
+	fmt.Fprintf(w, "\n<sub>Data: %s</sub>\n", strings.Join(r.Sources, ", "))
+	return nil
+}
 
+func markdownFindings(w io.Writer, r Result) {
 	fmt.Fprint(w, "### Upgrade plan\n\n")
 	fmt.Fprintln(w, "| Priority | Package | Installed | Upgrade to | Fixes |")
 	fmt.Fprintln(w, "|:--|:--|:--|:--|--:|")
@@ -99,8 +119,74 @@ func Markdown(w io.Writer, r Result) error {
 		fmt.Fprintf(w, "| %s | %s | `%s@%s` | %s | %s | %s |\n", f.Priority, id, md(f.Package.Name), md(f.Package.Version), fix, sev, epss)
 	}
 	fmt.Fprintln(w, "\n</details>")
-	fmt.Fprintf(w, "\n<sub>Data: %s</sub>\n", strings.Join(r.Sources, ", "))
-	return nil
+}
+
+func markdownAI(w io.Writer, a *aistack.Report) {
+	if len(a.Components) == 0 && len(a.MCPServers) == 0 && len(a.Models) == 0 && len(a.Issues) == 0 {
+		return
+	}
+	fmt.Fprint(w, "\n### AI stack\n\n")
+	if len(a.Issues) > 0 {
+		fmt.Fprintln(w, "| Severity | Issue | File | Fix |")
+		fmt.Fprintln(w, "|:--|:--|:--|:--|")
+		for i, is := range a.Issues {
+			if i == markdownRowLimit {
+				fmt.Fprintf(w, "\n%d more not shown; run `hardenkit scan` locally for the full list.\n", len(a.Issues)-i)
+				break
+			}
+			fmt.Fprintf(w, "| %s | %s | `%s` | %s |\n", is.Severity, md(is.Title), md(location(is)), md(is.Fix))
+		}
+		fmt.Fprintln(w)
+	} else {
+		fmt.Fprint(w, "No AI-stack issues found.\n\n")
+	}
+	fmt.Fprint(w, "<details><summary>AI inventory</summary>\n\n")
+	for _, line := range inventoryLines(a) {
+		fmt.Fprintf(w, "- **%s:** %s\n", line[0], md(line[1]))
+	}
+	fmt.Fprintln(w, "\n</details>")
+}
+
+func location(is aistack.Issue) string {
+	if is.Line > 0 {
+		return fmt.Sprintf("%s:%d", is.File, is.Line)
+	}
+	return is.File
+}
+
+// inventoryLines summarizes the AI inventory as (label, items) pairs.
+func inventoryLines(a *aistack.Report) [][2]string {
+	var out [][2]string
+	var cat string
+	var items []string
+	flush := func() {
+		if cat != "" {
+			out = append(out, [2]string{cat, strings.Join(items, ", ")})
+		}
+	}
+	for _, c := range a.Components {
+		if c.Category != cat {
+			flush()
+			cat, items = c.Category, nil
+		}
+		items = append(items, strings.TrimSpace(c.Name+" "+strings.Join(c.Versions, ", ")))
+	}
+	flush()
+	if len(a.MCPServers) > 0 {
+		var s []string
+		for _, m := range a.MCPServers {
+			s = append(s, fmt.Sprintf("%s (%s)", m.Name, m.File))
+		}
+		out = append(out, [2]string{"MCP servers", strings.Join(s, ", ")})
+	}
+	if len(a.Models) > 0 {
+		var s []string
+		for _, m := range a.Models {
+			s = append(s, fmt.Sprintf("%s (%s)", m.File, m.Format))
+		}
+		out = append(out, [2]string{"Model files", strings.Join(s, ", ")})
+	}
+	return out
 }
 
 // md escapes characters that would break a Markdown table cell.
@@ -121,6 +207,9 @@ func Text(w io.Writer, r Result, verbose bool) error {
 	if exploited > 0 {
 		fmt.Fprintf(w, " · %d exploited in the wild", exploited)
 	}
+	if n := r.aiIssues(); n > 0 {
+		fmt.Fprintf(w, " · %d AI-stack issues", n)
+	}
 	fmt.Fprintln(w)
 
 	for _, warn := range r.Warnings {
@@ -129,9 +218,22 @@ func Text(w io.Writer, r Result, verbose bool) error {
 
 	if len(r.Findings) == 0 {
 		fmt.Fprintln(w, "\nNo known vulnerabilities found.")
-		return nil
+	} else if err := textFindings(w, r, verbose); err != nil {
+		return err
+	}
+	if r.AIStack != nil {
+		textAI(w, r.AIStack)
 	}
 
+	fmt.Fprintf(w, "\nData: %s", strings.Join(r.Sources, ", "))
+	if r.Database != "" {
+		fmt.Fprintf(w, " (database built %s)", r.Database)
+	}
+	fmt.Fprintln(w)
+	return nil
+}
+
+func textFindings(w io.Writer, r Result, verbose bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "\nUPGRADE PLAN\t\t\t\t\t")
 	fmt.Fprintln(tw, "PRIORITY\tPACKAGE\tINSTALLED\tUPGRADE TO\tFIXES\t")
@@ -197,11 +299,26 @@ func Text(w io.Writer, r Result, verbose bool) error {
 			}
 		}
 	}
+	return nil
+}
 
-	fmt.Fprintf(w, "\nData: %s", strings.Join(r.Sources, ", "))
-	if r.Database != "" {
-		fmt.Fprintf(w, " (database built %s)", r.Database)
+func textAI(w io.Writer, a *aistack.Report) {
+	lines := inventoryLines(a)
+	if len(lines) == 0 && len(a.Issues) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nAI STACK")
+	for _, line := range lines {
+		fmt.Fprintf(w, "  %s: %s\n", line[0], line[1])
+	}
+	if len(a.Issues) == 0 {
+		fmt.Fprintln(w, "\nNo AI-stack issues found.")
+		return
 	}
 	fmt.Fprintln(w)
-	return nil
+	for _, is := range a.Issues {
+		fmt.Fprintf(w, "%-8s  %s\n", is.Severity, location(is))
+		fmt.Fprintf(w, "          %s\n", is.Title)
+		fmt.Fprintf(w, "          Fix: %s\n", is.Fix)
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hardenkit/scan/internal/aistack"
 	"github.com/hardenkit/scan/internal/enrich"
 	"github.com/hardenkit/scan/internal/finding"
 	"github.com/hardenkit/scan/internal/httpx"
@@ -42,13 +43,21 @@ Target is a directory (default "."), a file, or a container image such as
 Flags:
   --format FORMAT      text (default), json, or markdown (for CI summaries)
   --fail-on LEVEL      exit 1 if any finding is at or above LEVEL:
-                       kev, critical, high, medium, low (default: never fail)
+                       kev, critical, high, medium, low (default: never fail).
+                       AI-stack issues count too, except for kev
   --no-db              don't use the prebuilt database; query KEV, EPSS and
                        NVD live (slow without an NVD API key)
   --no-nvd             skip live CVSS lookups from NVD
+  --no-ai              skip the AI-stack checks (MCP configs, model files,
+                       risky model-loading code)
   --summary-file PATH  also append a Markdown report to PATH (e.g.
                        "$GITHUB_STEP_SUMMARY")
   -v, --verbose        show summaries, file locations and advisory links
+
+The AI-stack checks list LLM SDKs, agent frameworks, vector databases, MCP
+servers and model files, and flag secrets and unpinned servers in MCP
+configs, model files that run code when loaded, and code such as
+trust_remote_code=True.
 
 Severity scores, exploitation data (CISA KEV) and exploit likelihood (EPSS)
 come from a prebuilt database that is updated daily and cached locally.
@@ -96,6 +105,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	failOn := fs.String("fail-on", "", "")
 	noNVD := fs.Bool("no-nvd", false, "")
 	noDB := fs.Bool("no-db", false, "")
+	noAI := fs.Bool("no-ai", false, "")
 	summaryFile := fs.String("summary-file", "", "")
 	verbose := fs.Bool("verbose", false, "")
 	fs.BoolVar(verbose, "v", false, "")
@@ -260,6 +270,21 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		result.Upgrades = []finding.Upgrade{}
 	}
 
+	if !*noAI {
+		ai := aistack.New()
+		// Config, model and code checks need files on disk, so they don't
+		// run on container images; the package inventory works for both.
+		if path := localPath(target); path != "" {
+			logf("Checking AI stack ...")
+			if ai, err = aistack.Scan(ctx, path); err != nil {
+				warn("AI-stack checks failed: %v", err)
+				ai = aistack.New()
+			}
+		}
+		ai.Components = aistack.Components(pkgs)
+		result.AIStack = ai
+	}
+
 	switch *format {
 	case "json":
 		err = report.JSON(stdout, result)
@@ -282,7 +307,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 
-	if threshold != "" && failed(result.Findings, threshold) {
+	if threshold != "" && failed(result, threshold) {
 		logf("\nFailing: findings at or above %s (--fail-on).", strings.ToLower(threshold))
 		return exitFindings
 	}
@@ -303,8 +328,8 @@ func appendMarkdown(path string, r report.Result) error {
 	return f.Close()
 }
 
-func failed(fs []finding.Finding, threshold string) bool {
-	for _, f := range fs {
+func failed(r report.Result, threshold string) bool {
+	for _, f := range r.Findings {
 		if f.KEV != nil {
 			return true // exploited vulnerabilities fail every threshold
 		}
@@ -312,7 +337,28 @@ func failed(fs []finding.Finding, threshold string) bool {
 			return true
 		}
 	}
+	if r.AIStack != nil && threshold != "KEV" {
+		for _, is := range r.AIStack.Issues {
+			if finding.AtLeast(is.Severity, threshold) {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// localPath returns the directory or file a target names, or "" when the
+// target is a container image. Syft's "dir:" and "file:" prefixes are allowed.
+func localPath(target string) string {
+	for _, prefix := range []string{"dir:", "file:"} {
+		if p, ok := strings.CutPrefix(target, prefix); ok {
+			return p
+		}
+	}
+	if _, err := os.Stat(target); err == nil {
+		return target
+	}
+	return ""
 }
 
 func keys(m map[string]bool) []string {
