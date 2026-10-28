@@ -1,0 +1,61 @@
+name: Vulnerability database
+
+# Rebuilds the enrichment database (NVD CVSS, CISA KEV, FIRST EPSS) the CLI
+# downloads, and publishes it to the rolling "db" release. Each run starts
+# from the previous file and only fetches NVD changes since then; the first
+# run (or a run with "full" set) downloads all of NVD, which takes ~30 minutes.
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # daily, after FIRST publishes the day's EPSS scores
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Rebuild from scratch instead of updating the previous database
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # publish the release asset
+
+concurrency:
+  group: vulndb
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Download previous database
+        id: previous
+        if: ${{ !inputs.full }}
+        run: |
+          if gh release download db --pattern enrichment.json.gz --dir previous 2>/dev/null; then
+            echo "path=previous/enrichment.json.gz" >> "$GITHUB_OUTPUT"
+          else
+            echo "No previous database; doing a full build."
+          fi
+
+      - name: Build
+        env:
+          HARDENKIT_NVD_API_KEY: ${{ secrets.HARDENKIT_NVD_API_KEY }}
+          PREVIOUS: ${{ steps.previous.outputs.path }}
+        run: go run ./cmd/vulndb-build ${PREVIOUS:+--previous "$PREVIOUS"} --out enrichment.json.gz
+
+      - name: Publish
+        run: |
+          sha256sum enrichment.json.gz > enrichment.json.gz.sha256
+          if ! gh release view db >/dev/null 2>&1; then
+            gh release create db --prerelease --latest=false \
+              --title "Vulnerability database" \
+              --notes "Rolling daily build of the enrichment database used by \`hardenkit scan\` (NVD CVSS, CISA KEV, FIRST EPSS). Not a software release."
+          fi
+          gh release upload db enrichment.json.gz enrichment.json.gz.sha256 --clobber
