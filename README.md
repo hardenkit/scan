@@ -28,6 +28,27 @@ hardenkit scan -v .                 # include summaries, file locations and advi
 
 Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` the scan itself failed.
 
+## Install
+
+```bash
+curl -sSfL https://hardenkit.sh | sh
+```
+
+Or download a build for your platform from [Releases](https://github.com/hardenkit/scan/releases).
+
+## GitHub Action
+
+```yaml
+- uses: actions/checkout@v7
+- uses: hardenkit/scan@v0
+  with:
+    fail-on: high        # kev, critical, high, medium, low, or "" to never fail
+    # target: .          # directory, file, or container image
+    # args: --verbose
+```
+
+The upgrade plan and findings appear in the job summary. The step fails when a finding is at or above `fail-on`; vulnerabilities exploited in the wild (CISA KEV) always fail it.
+
 ### Vulnerability database
 
 Severity scores (NVD CVSS), exploitation data (CISA KEV) and exploit likelihood (EPSS) for every CVE are rebuilt every night and published as a small download. The CLI fetches it once a day and caches it, so scans take seconds and need no API keys. Package matching itself always queries OSV.dev live.
