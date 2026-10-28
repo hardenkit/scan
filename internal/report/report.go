@@ -18,6 +18,7 @@ type Result struct {
 	Upgrades []finding.Upgrade `json:"upgrades"`
 	Findings []finding.Finding `json:"findings"`
 	Sources  []string          `json:"sources"`
+	Database string            `json:"database_built,omitempty"` // when the prebuilt database was generated
 	Warnings []string          `json:"warnings,omitempty"`
 }
 
@@ -118,6 +119,10 @@ func Text(w io.Writer, r Result, verbose bool) error {
 		}
 	}
 
-	fmt.Fprintf(w, "\nData: %s\n", strings.Join(r.Sources, ", "))
+	fmt.Fprintf(w, "\nData: %s", strings.Join(r.Sources, ", "))
+	if r.Database != "" {
+		fmt.Fprintf(w, " (database built %s)", r.Database)
+	}
+	fmt.Fprintln(w)
 	return nil
 }

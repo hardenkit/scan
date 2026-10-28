@@ -18,6 +18,7 @@ import (
 	"github.com/hardenkit/scan/internal/inventory"
 	"github.com/hardenkit/scan/internal/osv"
 	"github.com/hardenkit/scan/internal/report"
+	"github.com/hardenkit/scan/internal/vulndb"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -42,12 +43,18 @@ Flags:
   --format text|json   output format (default text)
   --fail-on LEVEL      exit 1 if any finding is at or above LEVEL:
                        kev, critical, high, medium, low (default: never fail)
-  --no-nvd             skip CVSS scores from NVD (faster without an API key)
+  --no-db              don't use the prebuilt database; query KEV, EPSS and
+                       NVD live (slow without an NVD API key)
+  --no-nvd             skip live CVSS lookups from NVD
   -v, --verbose        show summaries, file locations and advisory links
 
+Severity scores, exploitation data (CISA KEV) and exploit likelihood (EPSS)
+come from a prebuilt database that is updated daily and cached locally.
+
 Environment:
-  HARDENKIT_NVD_API_KEY   NVD API key; raises the NVD rate limit from 5 to 50
-                          requests per 30 seconds
+  HARDENKIT_DB_URL        database location: an https URL or a local file
+  HARDENKIT_NVD_API_KEY   NVD API key for live lookups; raises the NVD rate
+                          limit from 5 to 50 requests per 30 seconds
 
 Other commands:
   hardenkit version
@@ -86,6 +93,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	format := fs.String("format", "text", "")
 	failOn := fs.String("fail-on", "", "")
 	noNVD := fs.Bool("no-nvd", false, "")
+	noDB := fs.Bool("no-db", false, "")
 	verbose := fs.Bool("verbose", false, "")
 	fs.BoolVar(verbose, "v", false, "")
 	if err := fs.Parse(args); err != nil {
@@ -171,8 +179,48 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		kev  map[string]enrich.KEVEntry
 		epss map[string]float64
 		cvss map[string]enrich.CVSS
+		live = len(cves) > 0
 	)
-	if len(cves) > 0 {
+	if len(cves) > 0 && !*noDB {
+		src := os.Getenv("HARDENKIT_DB_URL")
+		if src == "" {
+			src = vulndb.DefaultURL
+		}
+		logf("Loading vulnerability database ...")
+		db, w, err := vulndb.Load(ctx, src)
+		if w != "" {
+			warn("%s", w)
+		}
+		if err != nil {
+			warn("prebuilt vulnerability database unavailable (%v); used live data sources", err)
+		} else {
+			live = false
+			kev, epss, cvss = db.Lookup(cves)
+			result.Sources = append(result.Sources, "CISA KEV", "FIRST EPSS", "NVD")
+			result.Database = db.Generated
+
+			// CVEs published since the nightly build have no score yet; look
+			// those few up live when that's quick.
+			var missing []string
+			for _, id := range cves {
+				if _, ok := cvss[id]; !ok {
+					missing = append(missing, id)
+				}
+			}
+			key := os.Getenv("HARDENKIT_NVD_API_KEY")
+			if len(missing) > 0 && !*noNVD && (key != "" || len(missing) <= 5) {
+				logf("Fetching CVSS scores from NVD for %d CVEs newer than the database ...", len(missing))
+				extra, err := enrich.NVD(ctx, missing, key)
+				if err != nil {
+					warn("%v", err)
+				}
+				for id, c := range extra {
+					cvss[id] = c
+				}
+			}
+		}
+	}
+	if live {
 		logf("Checking %d CVEs against CISA KEV and EPSS ...", len(cves))
 		if kev, err = enrich.KEV(ctx); err != nil {
 			warn("%v", err)
