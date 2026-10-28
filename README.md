@@ -13,7 +13,7 @@ Most scanners hand you a list of hundreds of CVEs. `hardenkit scan` ranks them b
 
 Then it collapses them into an **upgrade plan**: one line per package with the single version that resolves every fixable finding.
 
-It also checks your **AI stack**: the LLM SDKs, agent frameworks, vector databases, MCP servers and model files in the project, and the settings that let one of them take over a machine.
+It also checks your **AI stack** (the LLM SDKs, agent frameworks, vector databases, MCP servers and model files in the project, and the settings that let one of them take over a machine) and your **Kubernetes manifests and Helm charts**.
 
 > Status: early development. Not yet released.
 
@@ -27,9 +27,10 @@ hardenkit scan --format json .      # machine-readable output
 hardenkit scan --fail-on high .     # exit 1 on high/critical or exploited findings (for CI)
 hardenkit scan -v .                 # include summaries, file locations and advisory links
 hardenkit scan --no-ai .            # skip the AI-stack checks
+hardenkit scan --no-k8s .           # skip the Kubernetes checks
 ```
 
-Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` the scan itself failed. AI-stack issues count toward `--fail-on` at their severity, except with `--fail-on kev`, which only fails on exploited vulnerabilities.
+Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` the scan itself failed. AI-stack and Kubernetes issues count toward `--fail-on` at their severity, except with `--fail-on kev`, which only fails on exploited vulnerabilities.
 
 ## Install
 
@@ -95,6 +96,31 @@ The scan lists the AI parts of the project (LLM APIs, agent frameworks, vector d
 | `model-pickle-format` | Low | Other pickle-based model files; safetensors can't run code |
 
 MCP configs are read from `.mcp.json` (Claude Code), `.cursor/mcp.json`, `.vscode/mcp.json`, `mcp_config.json` (Windsurf), `claude_desktop_config.json` and `.gemini/settings.json`. Secrets are never printed. Config, model and code checks run on directories and files; for container images only the package inventory is reported.
+
+### Kubernetes
+
+The scan reads Kubernetes manifests (`.yaml`/`.yml`, including multi-document files and `List` objects) and Helm charts, which it renders with `helm template` and the chart's default values when [Helm](https://helm.sh) is installed. GitHub's hosted runners include Helm. Issues in a chart point at the template that produced them.
+
+| Check | Severity | What it finds |
+|:------|:---------|:--------------|
+| `k8s-privileged` | Critical | Privileged containers |
+| `k8s-host-path` | Critical / High | `hostPath` volumes; critical for the node's root, `/etc`, `/proc`, kubelet or container runtime sockets |
+| `k8s-rbac-anonymous` | Critical / High | Roles bound to `system:unauthenticated`, `system:anonymous` or every authenticated user |
+| `k8s-host-namespace` | High | `hostNetwork`, `hostPID` or `hostIPC` |
+| `k8s-dangerous-capabilities` | High | Added capabilities beyond the Pod Security baseline set (e.g. `SYS_ADMIN`, `NET_ADMIN`, `ALL`) |
+| `k8s-seccomp-unconfined`, `k8s-unmasked-proc` | High | Seccomp turned off; unmasked `/proc` |
+| `k8s-hardcoded-secret` | High | Secrets written into container `env` values |
+| `k8s-secret-in-repo` | High | `Secret` manifests with values committed to the repository |
+| `k8s-rbac-wildcard` | High / Medium | Roles granting `*` verbs on `*` resources (cluster-admin equivalent), or either wildcard |
+| `k8s-rbac-escalation` | High | `escalate`, `bind` or `impersonate` |
+| `k8s-cluster-admin` | High | Bindings to `cluster-admin` |
+| `k8s-restricted` | Medium / Low | Gaps against the [restricted Pod Security Standard](https://kubernetes.io/docs/concepts/security/pod-security-standards/): medium when the container can run as root or escalate privileges, low for missing `drop: [ALL]` or seccomp profile |
+| `k8s-image-unpinned` | Medium | Images without a tag or with `:latest` |
+| `k8s-rbac-secrets`, `k8s-rbac-exec` | Medium | Roles that can read Secrets or exec into pods |
+| `k8s-host-port` | Medium | `hostPort` |
+| `k8s-hardening` | Low | Writable root filesystem, no memory limit |
+
+The report also lists the images the workloads run; scan each one with `hardenkit scan IMAGE` to find its vulnerabilities.
 
 ## Attribution
 
