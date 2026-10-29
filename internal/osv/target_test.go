@@ -59,3 +59,51 @@ func TestFixedVersionsByEcosystem(t *testing.T) {
 		t.Errorf("all fixes = %v", got)
 	}
 }
+
+func TestActionTarget(t *testing.T) {
+	for _, c := range []struct{ purl, key, version string }{
+		{"pkg:github/tj-actions/changed-files@v45", "GitHub Actions/tj-actions/changed-files@45", "45"},
+		{"pkg:github/actions/cache@v6.1.0", "GitHub Actions/actions/cache@6.1.0", "6.1.0"},
+		{"pkg:github/acme/deploy@main", "GitHub Actions/acme/deploy", ""},
+		{"pkg:github/%24/.github#actions/setup", "GitHub Actions/$/.github", ""},
+	} {
+		got := TargetFor(c.purl, "", "")
+		if got.Key != c.key || got.Version != c.version || got.Ecosystem != ActionsEcosystem {
+			t.Errorf("TargetFor(%q) = %+v, want key %q version %q", c.purl, got, c.key, c.version)
+		}
+	}
+}
+
+func TestActionAffected(t *testing.T) {
+	fixed := []Range{{Type: "ECOSYSTEM", Events: []Event{{Introduced: "0"}, {Fixed: "46.0.1"}}}}
+	// CVE-2025-24362 in github/codeql-action: fixed in v3, v2 retired unfixed.
+	codeql := []Range{
+		{Type: "ECOSYSTEM", Events: []Event{{Introduced: "3.26.11"}, {Fixed: "3.28.3"}}},
+		{Type: "ECOSYSTEM", Events: []Event{{Introduced: "2.26.11"}}},
+	}
+	window := []Range{{Type: "ECOSYSTEM", Events: []Event{{Introduced: "2.1.0"}, {LastAffected: "2.3.4"}}}}
+	for _, c := range []struct {
+		version string
+		ranges  []Range
+		want    bool
+	}{
+		{"45", fixed, true},      // v45 moves within 45.x, all before the fix
+		{"46", fixed, false},     // v46 points at 46.0.1 or later
+		{"46.0.0", fixed, true},  // an exact release before the fix
+		{"46.0.1", fixed, false}, // the fix
+		{"4.39.1", codeql, false},
+		{"3.28.3", codeql, false},
+		{"3.27.0", codeql, true},
+		{"3", codeql, false}, // v3 now points past the fix
+		{"2.26.11", codeql, true},
+		{"2", codeql, true},
+		{"2.0.9", window, false},
+		{"2.2", window, true}, // the newest 2.2.x is inside the window
+		{"2.3.4", window, true},
+		{"2.3.5", window, false},
+	} {
+		if got := actionAffected(c.version, c.ranges); got != c.want {
+			t.Errorf("actionAffected(%q) = %v, want %v", c.version, got, c.want)
+		}
+	}
+}

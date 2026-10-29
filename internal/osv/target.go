@@ -2,6 +2,7 @@ package osv
 
 import (
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -23,6 +24,9 @@ type Target struct {
 // version (as the cataloger reported them).
 func TargetFor(purl, name, version string) Target {
 	if t, ok := distroTarget(purl, version); ok {
+		return t
+	}
+	if t, ok := actionTarget(purl); ok {
 		return t
 	}
 	// OSV names Maven packages "group:artifact"; catalogers report the artifact.
@@ -125,4 +129,130 @@ func isUbuntuLTS(release string) bool {
 		return false
 	}
 	return (year[1]-'0')%2 == 0
+}
+
+// ActionsEcosystem is OSV's ecosystem for GitHub Actions.
+const ActionsEcosystem = "GitHub Actions"
+
+// actionTarget matches a GitHub Action (pkg:github/owner/repo@v4.2.0) by
+// owner/repo and its version tag. Actions referenced by branch, by an
+// unannotated commit or from the same repository get no version and aren't
+// matched.
+func actionTarget(purl string) (Target, bool) {
+	p, ok := parsePURL(purl)
+	if !ok || p.typ != "github" {
+		return Target{}, false
+	}
+	name := p.namespace + "/" + p.name
+	t := Target{Key: ActionsEcosystem + "/" + name, Ecosystem: ActionsEcosystem, Name: name}
+	if p.namespace == "$" {
+		return t, true // a local action ($ is Syft's name for this repository)
+	}
+	if v := strings.TrimPrefix(p.version, "v"); actionVersion.MatchString(v) {
+		t.Version = v
+		t.Key += "@" + v
+	}
+	return t, true
+}
+
+var actionVersion = regexp.MustCompile(`^\d+(\.\d+){0,2}$`)
+
+// actionAffected reports whether an action at version (a tag such as "45"
+// or "4.2.0") is in one of the advisory's ranges. A tag without a patch
+// number is a moving tag that points at the newest release of that line, so
+// "v45" is compared as the newest 45.x.
+//
+// Advisories for actions list one range per major version, and a line that
+// was retired without a fix has no end ("introduced 2.26.11"). Such a range
+// only covers its own major version when the advisory has a range for a
+// later one.
+func actionAffected(version string, ranges []Range) bool {
+	v := versionParts(version, true)
+	maxMajor := -1
+	for _, r := range ranges {
+		for _, e := range r.Events {
+			if e.Introduced != "" {
+				maxMajor = max(maxMajor, versionParts(e.Introduced, false)[0])
+			}
+		}
+	}
+	for _, r := range ranges {
+		if r.Type != "ECOSYSTEM" && r.Type != "SEMVER" {
+			continue
+		}
+		if major, open := openRange(r); open && major < maxMajor && v[0] != major {
+			continue
+		}
+		// OSV's evaluation: walk the events in order, entering a range at
+		// "introduced" and leaving it at "fixed" or after "last_affected".
+		affected := false
+		for _, e := range r.Events {
+			switch {
+			case e.Introduced != "":
+				if e.Introduced == "0" || compareParts(v, versionParts(e.Introduced, false)) >= 0 {
+					affected = true
+				}
+			case e.Fixed != "":
+				if compareParts(v, versionParts(e.Fixed, false)) >= 0 {
+					affected = false
+				}
+			case e.LastAffected != "":
+				if compareParts(v, versionParts(e.LastAffected, false)) > 0 {
+					affected = false
+				}
+			}
+		}
+		if affected {
+			return true
+		}
+	}
+	return false
+}
+
+// openRange reports whether a range has no fixed or last-affected version,
+// and the major version it was introduced in.
+func openRange(r Range) (major int, open bool) {
+	open = true
+	for _, e := range r.Events {
+		switch {
+		case e.Introduced != "":
+			major = versionParts(e.Introduced, false)[0]
+		case e.Fixed != "", e.LastAffected != "":
+			open = false
+		}
+	}
+	return major, open
+}
+
+// versionParts parses "4.2.0" into [4 2 0]. Missing parts are 0, or the
+// largest value when open is set (a moving tag).
+func versionParts(v string, open bool) [3]int {
+	var out [3]int
+	if open {
+		out = [3]int{1 << 30, 1 << 30, 1 << 30}
+	}
+	v = strings.TrimPrefix(v, "v")
+	for i, part := range strings.SplitN(v, ".", 3) {
+		n := 0
+		for _, c := range part {
+			if c < '0' || c > '9' {
+				break
+			}
+			n = n*10 + int(c-'0')
+		}
+		out[i] = n
+	}
+	return out
+}
+
+func compareParts(a, b [3]int) int {
+	for i := range a {
+		if a[i] != b[i] {
+			if a[i] < b[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
 }

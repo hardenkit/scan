@@ -132,7 +132,20 @@ func Query(ctx context.Context, targets []Target) (map[string][]string, error) {
 		} `json:"vulns"`
 	}
 
-	out := map[string][]string{}
+	var actions, rest []Target
+	for _, t := range targets {
+		switch {
+		case t.Ecosystem != ActionsEcosystem:
+			rest = append(rest, t)
+		case t.Version != "":
+			actions = append(actions, t)
+		}
+	}
+	targets = rest
+	out, err := queryActions(ctx, actions)
+	if err != nil {
+		return nil, err
+	}
 	for start := 0; start < len(targets); start += batchSize {
 		end := min(start+batchSize, len(targets))
 		chunk := targets[start:end]
@@ -170,6 +183,58 @@ func Query(ctx context.Context, targets []Target) (map[string][]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// queryActions matches GitHub Actions. OSV doesn't match versions in this
+// ecosystem, so each action's advisories are fetched by name and its tag is
+// checked against their ranges here.
+func queryActions(ctx context.Context, targets []Target) (map[string][]string, error) {
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		firstErr error
+		out      = map[string][]string{}
+		jobs     = make(chan Target)
+	)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range jobs {
+				body, _ := json.Marshal(map[string]any{"package": map[string]string{"ecosystem": t.Ecosystem, "name": t.Name}})
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/query", bytes.NewReader(body))
+				var resp struct {
+					Vulns []Vuln `json:"vulns"`
+				}
+				if err == nil {
+					req.Header.Set("Content-Type", "application/json")
+					err = httpx.Do(req, &resp)
+				}
+				mu.Lock()
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+				for _, v := range resp.Vulns {
+					var ranges []Range
+					for _, a := range v.Affected {
+						if a.Package.Ecosystem == t.Ecosystem && strings.EqualFold(a.Package.Name, t.Name) {
+							ranges = append(ranges, a.Ranges...)
+						}
+					}
+					if actionAffected(t.Version, ranges) {
+						out[t.Key] = append(out[t.Key], v.ID)
+					}
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	for _, t := range targets {
+		jobs <- t
+	}
+	close(jobs)
+	wg.Wait()
+	return out, firstErr
 }
 
 // Fetch downloads the full records for ids, in parallel.
