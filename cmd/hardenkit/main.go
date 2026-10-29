@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -158,6 +159,15 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	result := report.Result{Target: target, Sources: []string{"OSV.dev"}}
 	warn := func(msg string, a ...any) {
 		result.Warnings = append(result.Warnings, fmt.Sprintf(msg, a...))
+	}
+
+	// Something that is clearly a path but doesn't exist would otherwise be
+	// tried as an image reference and fail with every provider's error.
+	if looksLikePath(target) {
+		if _, err := os.Stat(target); err != nil {
+			logf("error: %v", err)
+			return exitError
+		}
 	}
 
 	logf("Cataloging packages in %s ...", target)
@@ -480,6 +490,15 @@ func lastLine(msg string) string {
 		line = line[:160] + "..."
 	}
 	return line
+}
+
+func looksLikePath(target string) bool {
+	for _, prefix := range []string{"/", "./", "../", "~", ".\\", "..\\"} {
+		if strings.HasPrefix(target, prefix) {
+			return true
+		}
+	}
+	return target == "." || target == ".." || filepath.VolumeName(target) != ""
 }
 
 // localPath returns the directory or file a target names, or "" when the
