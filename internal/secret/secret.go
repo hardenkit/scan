@@ -13,7 +13,10 @@ var (
 	// Setting names that usually hold a secret.
 	name = regexp.MustCompile(`(?i)(key|token|secret|passw|pwd|auth|credential|cookie|bearer)`)
 	// Names that refer to a secret rather than hold it (DB_SECRET_NAME, KEY_FILE).
-	reference = regexp.MustCompile(`(?i)[_.-]?(name|id|file|path|dir|url|uri|arn|ref|region|endpoint|version|type|mode|enabled|length|ttl)$`)
+	reference = regexp.MustCompile(`(?i)[_.-]?(names?|id|file|path|dir|url|uri|arn|ref|region|endpoint|version|type|mode|enabled|length|ttl|email|prefix)$`)
+	// Generated secrets mix letters and digits; words, slugs and cache keys don't.
+	digit  = regexp.MustCompile(`[0-9]`)
+	letter = regexp.MustCompile(`[A-Za-z]`)
 	// Placeholders in the style of an environment variable name (API_KEY_VALUE).
 	placeholder = regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$`)
 )
@@ -32,7 +35,7 @@ func Literal(key, value string) bool {
 	}
 	v := strings.TrimSpace(value)
 	v = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(v, "Bearer "), "Basic "))
-	if len(v) < 12 || strings.Contains(v, " ") {
+	if len(v) < 12 || strings.Contains(v, " ") || !digit.MatchString(v) || !letter.MatchString(v) {
 		return false
 	}
 	lower := strings.ToLower(v)

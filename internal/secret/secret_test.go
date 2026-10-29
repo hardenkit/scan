@@ -22,6 +22,10 @@ func TestLiteral(t *testing.T) {
 		{"GOOGLE_APPLICATION_CREDENTIALS", "/home/me/creds.json", false},
 		{"LOG_LEVEL", "a8f3k2m9q7w1z5x0", false},
 		{"AUTH_ENABLED", "true", false},
+		{"GIT_AUTHOR_EMAIL", "github-actions[bot]@users.noreply.github.com", false},
+		{"GH_AW_SECRET_NAMES", "GH_AW_GITHUB_TOKEN,GITHUB_TOKEN", false},
+		{"key-prefix", "node_modules-component-fixtures", false},
+		{"key", "homeassistant[]", false},
 	} {
 		if got := Literal(c.key, c.value); got != c.want {
 			t.Errorf("Literal(%q, %q) = %v, want %v", c.key, c.value, got, c.want)
