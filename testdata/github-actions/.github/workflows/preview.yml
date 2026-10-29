@@ -1,0 +1,20 @@
+name: Preview
+# Builds a preview of every pull request, including ones from forks.
+on: pull_request_target
+permissions: write-all
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: tj-actions/changed-files@v45
+      - name: Build
+        run: |
+          npm ci
+          npm run build
+          echo "Built preview for ${{ github.event.pull_request.title }}"
+      - uses: some-org/deploy-preview@main
+        with:
+          api-token: 7f3a9c2e5b8d1f4a6c0e
