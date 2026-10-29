@@ -1,5 +1,6 @@
 // Package issue is the shared shape of configuration findings (AI stack,
-// Kubernetes): a rule that matched a file, with a severity and a fix.
+// Kubernetes, GitHub Actions): a rule that matched a file, with a severity
+// and a fix.
 package issue
 
 import "sort"

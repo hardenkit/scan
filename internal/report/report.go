@@ -11,6 +11,7 @@ import (
 
 	"github.com/hardenkit/scan/internal/aistack"
 	"github.com/hardenkit/scan/internal/finding"
+	"github.com/hardenkit/scan/internal/ghactions"
 	"github.com/hardenkit/scan/internal/inventory"
 	"github.com/hardenkit/scan/internal/issue"
 	"github.com/hardenkit/scan/internal/kube"
@@ -18,16 +19,17 @@ import (
 
 // Result is everything one scan produced.
 type Result struct {
-	Target     string            `json:"target"`
-	Packages   int               `json:"packages"`
-	Upgrades   []finding.Upgrade `json:"upgrades"`
-	Findings   []finding.Finding `json:"findings"`
-	Sources    []string          `json:"sources"`
-	Database   string            `json:"database_built,omitempty"` // when the prebuilt database was generated
-	AIStack    *aistack.Report   `json:"ai_stack,omitempty"`
-	Kubernetes *kube.Report      `json:"kubernetes,omitempty"`
-	Unfixed    int               `json:"unfixed_hidden,omitempty"` // findings left out by --ignore-unfixed
-	Warnings   []string          `json:"warnings,omitempty"`
+	Target        string            `json:"target"`
+	Packages      int               `json:"packages"`
+	Upgrades      []finding.Upgrade `json:"upgrades"`
+	Findings      []finding.Finding `json:"findings"`
+	Sources       []string          `json:"sources"`
+	Database      string            `json:"database_built,omitempty"` // when the prebuilt database was generated
+	AIStack       *aistack.Report   `json:"ai_stack,omitempty"`
+	Kubernetes    *kube.Report      `json:"kubernetes,omitempty"`
+	GitHubActions *ghactions.Report `json:"github_actions,omitempty"`
+	Unfixed       int               `json:"unfixed_hidden,omitempty"` // findings left out by --ignore-unfixed
+	Warnings      []string          `json:"warnings,omitempty"`
 }
 
 // configCounts is the header summary of configuration issues, e.g.
@@ -133,7 +135,7 @@ func markdownFindings(w io.Writer, r Result) {
 	fmt.Fprintln(w, "\n</details>")
 }
 
-// section is a group of configuration issues (AI stack, Kubernetes) with
+// section is a group of configuration issues (AI stack, Kubernetes, CI) with
 // the inventory they were found in.
 type section struct {
 	title, inventoryTitle, name string
@@ -150,6 +152,9 @@ func sections(r Result) []section {
 	}
 	if k := r.Kubernetes; k != nil {
 		out = append(out, section{"Kubernetes", "Kubernetes inventory", "Kubernetes", kubeLines(k), k.Issues})
+	}
+	if g := r.GitHubActions; g != nil {
+		out = append(out, section{"GitHub Actions", "Workflow inventory", "GitHub Actions", actionsLines(g), g.Issues})
 	}
 	return out
 }
@@ -401,6 +406,31 @@ func kubeLines(k *kube.Report) [][2]string {
 	}
 	if len(k.Images) > 0 {
 		out = append(out, [2]string{"Images", strings.Join(k.Images, ", ") + " (scan each with: hardenkit scan IMAGE)"})
+	}
+	return out
+}
+
+// actionsLines summarizes the workflows and the actions they use.
+func actionsLines(g *ghactions.Report) [][2]string {
+	var files []string
+	triggers := map[string]bool{}
+	for _, wf := range g.Workflows {
+		files = append(files, wf.File)
+		for _, t := range wf.Triggers {
+			triggers[t] = true
+		}
+	}
+	out := [][2]string{{"Workflows", strings.Join(files, ", ")}}
+	if len(triggers) > 0 {
+		var ts []string
+		for t := range triggers {
+			ts = append(ts, t)
+		}
+		sort.Strings(ts)
+		out = append(out, [2]string{"Triggers", strings.Join(ts, ", ")})
+	}
+	if len(g.Actions) > 0 {
+		out = append(out, [2]string{"Actions", strings.Join(g.Actions, ", ")})
 	}
 	return out
 }

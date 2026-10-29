@@ -17,6 +17,7 @@ import (
 	"github.com/hardenkit/scan/internal/aistack"
 	"github.com/hardenkit/scan/internal/enrich"
 	"github.com/hardenkit/scan/internal/finding"
+	"github.com/hardenkit/scan/internal/ghactions"
 	"github.com/hardenkit/scan/internal/httpx"
 	"github.com/hardenkit/scan/internal/inventory"
 	"github.com/hardenkit/scan/internal/issue"
@@ -48,8 +49,8 @@ Flags:
   --format FORMAT      text (default), json, or markdown (for CI summaries)
   --fail-on LEVEL      exit 1 if any finding is at or above LEVEL:
                        kev, critical, high, medium, low (default: never fail).
-                       AI-stack and Kubernetes issues count too, except
-                       for kev
+                       AI-stack, Kubernetes and GitHub Actions issues count
+                       too, except for kev
   --ignore-unfixed     leave out vulnerabilities that have no fixed version
                        yet (exploited ones are always kept)
   --no-db              don't use the prebuilt database; query KEV, EPSS and
@@ -58,6 +59,7 @@ Flags:
   --no-ai              skip the AI-stack checks (MCP configs, model files,
                        risky model-loading code)
   --no-k8s             skip the Kubernetes manifest and Helm chart checks
+  --no-actions         skip the GitHub Actions workflow checks
   --images             also scan every container image the Kubernetes
                        manifests deploy (pulled from their registries)
   --summary-file PATH  also append a Markdown report to PATH (e.g.
@@ -73,6 +75,11 @@ The Kubernetes checks read manifests and Helm charts (rendered with "helm
 template" when helm is installed) and flag privileged pods, host access,
 gaps against the restricted Pod Security Standard, broad RBAC and committed
 Secrets.
+
+The GitHub Actions checks read .github/workflows and composite actions and
+flag script injection through ${{ }} expressions, pull_request_target jobs
+that run pull request code, third-party actions not pinned to a commit,
+write-all tokens and secrets written into workflows.
 
 Severity scores, exploitation data (CISA KEV) and exploit likelihood (EPSS)
 come from a prebuilt database that is updated daily and cached locally.
@@ -122,6 +129,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	noDB := fs.Bool("no-db", false, "")
 	noAI := fs.Bool("no-ai", false, "")
 	noK8s := fs.Bool("no-k8s", false, "")
+	noActions := fs.Bool("no-actions", false, "")
 	images := fs.Bool("images", false, "")
 	ignoreUnfixed := fs.Bool("ignore-unfixed", false, "")
 	summaryFile := fs.String("summary-file", "", "")
@@ -362,6 +370,15 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		result.AIStack = ai
 	}
 
+	if path := localPath(target); path != "" && !*noActions {
+		logf("Checking GitHub Actions workflows ...")
+		gha, err := ghactions.Scan(ctx, path)
+		if err != nil {
+			warn("GitHub Actions checks failed: %v", err)
+		}
+		result.GitHubActions = gha
+	}
+
 	switch *format {
 	case "json":
 		err = report.JSON(stdout, result)
@@ -423,6 +440,9 @@ func failed(r report.Result, threshold string) bool {
 	}
 	if r.Kubernetes != nil {
 		issues = append(issues, r.Kubernetes.Issues...)
+	}
+	if r.GitHubActions != nil {
+		issues = append(issues, r.GitHubActions.Issues...)
 	}
 	for _, is := range issues {
 		if finding.AtLeast(is.Severity, threshold) {
