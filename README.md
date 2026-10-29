@@ -28,6 +28,8 @@ hardenkit scan --fail-on high .     # exit 1 on high/critical or exploited findi
 hardenkit scan -v .                 # include summaries, file locations and advisory links
 hardenkit scan --no-ai .            # skip the AI-stack checks
 hardenkit scan --no-k8s .           # skip the Kubernetes checks
+hardenkit scan --images .           # also scan every image the Kubernetes manifests deploy
+hardenkit scan --ignore-unfixed .   # leave out vulnerabilities with no fix yet
 ```
 
 Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` the scan itself failed. AI-stack and Kubernetes issues count toward `--fail-on` at their severity, except with `--fail-on kev`, which only fails on exploited vulnerabilities.
@@ -120,7 +122,11 @@ The scan reads Kubernetes manifests (`.yaml`/`.yml`, including multi-document fi
 | `k8s-host-port` | Medium | `hostPort` |
 | `k8s-hardening` | Low | Writable root filesystem, no memory limit |
 
-The report also lists the images the workloads run; scan each one with `hardenkit scan IMAGE` to find its vulnerabilities.
+The report also lists the images the workloads run. `--images` pulls each one from its registry (four at a time) and adds its packages to the scan; findings and upgrade rows name the image to rebuild. Private registries use your Docker credentials (`~/.docker/config.json`). Images that can't be pulled are listed in a warning.
+
+### Container images
+
+Linux distribution packages (Debian, Ubuntu, Alpine, Wolfi, Chainguard) are matched against the advisories for the image's release, under their source package, so fixes the distribution backported count as fixed and the upgrade plan offers that release's version (for example `3.5.8-1~deb13u1`, not the version in Debian unstable). Distributions list many CVEs they haven't fixed yet; `--ignore-unfixed` hides those, except ones exploited in the wild.
 
 ## Attribution
 
