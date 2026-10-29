@@ -26,6 +26,7 @@ type Result struct {
 	Database   string            `json:"database_built,omitempty"` // when the prebuilt database was generated
 	AIStack    *aistack.Report   `json:"ai_stack,omitempty"`
 	Kubernetes *kube.Report      `json:"kubernetes,omitempty"`
+	Unfixed    int               `json:"unfixed_hidden,omitempty"` // findings left out by --ignore-unfixed
 	Warnings   []string          `json:"warnings,omitempty"`
 }
 
@@ -66,6 +67,9 @@ func Markdown(w io.Writer, r Result) error {
 	}
 	fmt.Fprint(w, r.configCounts())
 	fmt.Fprintf(w, "** in `%s`\n\n", r.Target)
+	if r.Unfixed > 0 {
+		fmt.Fprintf(w, "%d vulnerabilities without a fix are hidden (`--ignore-unfixed`).\n\n", r.Unfixed)
+	}
 	for _, warn := range r.Warnings {
 		fmt.Fprintf(w, "> [!WARNING]\n> %s\n\n", md(warn))
 	}
@@ -254,6 +258,9 @@ func Text(w io.Writer, r Result, verbose bool) error {
 	}
 	fmt.Fprint(w, r.configCounts())
 	fmt.Fprintln(w)
+	if r.Unfixed > 0 {
+		fmt.Fprintf(w, "%d vulnerabilities without a fix hidden (--ignore-unfixed)\n", r.Unfixed)
+	}
 
 	for _, warn := range r.Warnings {
 		fmt.Fprintf(w, "warning: %s\n", warn)

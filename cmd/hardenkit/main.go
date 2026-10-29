@@ -49,6 +49,8 @@ Flags:
                        kev, critical, high, medium, low (default: never fail).
                        AI-stack and Kubernetes issues count too, except
                        for kev
+  --ignore-unfixed     leave out vulnerabilities that have no fixed version
+                       yet (exploited ones are always kept)
   --no-db              don't use the prebuilt database; query KEV, EPSS and
                        NVD live (slow without an NVD API key)
   --no-nvd             skip live CVSS lookups from NVD
@@ -120,6 +122,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	noAI := fs.Bool("no-ai", false, "")
 	noK8s := fs.Bool("no-k8s", false, "")
 	images := fs.Bool("images", false, "")
+	ignoreUnfixed := fs.Bool("ignore-unfixed", false, "")
 	summaryFile := fs.String("summary-file", "", "")
 	verbose := fs.Bool("verbose", false, "")
 	fs.BoolVar(verbose, "v", false, "")
@@ -314,6 +317,18 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	}
 
 	result.Findings = finding.Build(pkgs, matches, vulns, kev, epss, cvss)
+	if *ignoreUnfixed {
+		kept := result.Findings[:0]
+		for _, f := range result.Findings {
+			// Exploited vulnerabilities stay: they need a mitigation even without a fix.
+			if f.FixedIn != "" || f.KEV != nil {
+				kept = append(kept, f)
+			} else {
+				result.Unfixed++
+			}
+		}
+		result.Findings = kept
+	}
 	if result.Findings == nil {
 		result.Findings = []finding.Finding{}
 	}
