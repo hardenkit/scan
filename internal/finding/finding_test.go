@@ -152,3 +152,17 @@ func sign(n int) int {
 	}
 	return 0
 }
+
+func TestUpgradePlanPerImage(t *testing.T) {
+	p := inventory.Package{Name: "openssl", Version: "3.1.4-r2", PURL: "pkg:apk/alpine/openssl@3.1.4-r2"}
+	inA, inB := p, p
+	inA.Image, inB.Image = "app:1", "worker:1"
+	plan := UpgradePlan([]Finding{
+		{ID: "CVE-1", Package: inA, FixedIn: "3.1.8-r1"},
+		{ID: "CVE-1", Package: inB, FixedIn: "3.1.8-r1"},
+		{ID: "CVE-2", Package: inB, FixedIn: "3.1.5-r0"},
+	})
+	if len(plan) != 2 || plan[0].Package.Image != "app:1" || plan[1].Fixes != 2 {
+		t.Errorf("plan = %+v, want one upgrade per image", plan)
+	}
+}

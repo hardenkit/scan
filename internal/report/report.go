@@ -11,6 +11,7 @@ import (
 
 	"github.com/hardenkit/scan/internal/aistack"
 	"github.com/hardenkit/scan/internal/finding"
+	"github.com/hardenkit/scan/internal/inventory"
 	"github.com/hardenkit/scan/internal/issue"
 	"github.com/hardenkit/scan/internal/kube"
 )
@@ -93,7 +94,7 @@ func markdownFindings(w io.Writer, r Result) {
 		if u.Unfixed > 0 {
 			fixes += fmt.Sprintf(" (+%d without a fix)", u.Unfixed)
 		}
-		fmt.Fprintf(w, "| %s | `%s` | `%s` | %s | %s |\n", u.Priority, md(u.Package.Name), md(u.Package.Version), to, fixes)
+		fmt.Fprintf(w, "| %s | %s | `%s` | %s | %s |\n", u.Priority, mdPkg(u.Package), md(u.Package.Version), to, fixes)
 	}
 
 	fmt.Fprint(w, "\n<details><summary>All findings</summary>\n\n")
@@ -123,7 +124,7 @@ func markdownFindings(w io.Writer, r Result) {
 		if f.EPSS != nil {
 			epss = fmt.Sprintf("%.1f%%", *f.EPSS*100)
 		}
-		fmt.Fprintf(w, "| %s | %s | `%s@%s` | %s | %s | %s |\n", f.Priority, id, md(f.Package.Name), md(f.Package.Version), fix, sev, epss)
+		fmt.Fprintf(w, "| %s | %s | `%s@%s`%s | %s | %s | %s |\n", f.Priority, id, md(f.Package.Name), md(f.Package.Version), mdImage(f.Package), fix, sev, epss)
 	}
 	fmt.Fprintln(w, "\n</details>")
 }
@@ -214,6 +215,25 @@ func inventoryLines(a *aistack.Report) [][2]string {
 	return out
 }
 
+// pkgName is the package name, with the image it was found in for --images.
+func pkgName(p inventory.Package) string {
+	if p.Image != "" {
+		return p.Name + " (in " + p.Image + ")"
+	}
+	return p.Name
+}
+
+func mdPkg(p inventory.Package) string {
+	return "`" + md(p.Name) + "`" + mdImage(p)
+}
+
+func mdImage(p inventory.Package) string {
+	if p.Image == "" {
+		return ""
+	}
+	return " in `" + md(p.Image) + "`"
+}
+
 // md escapes characters that would break a Markdown table cell.
 func md(s string) string {
 	return strings.NewReplacer("|", "\\|", "\n", " ", "`", "'").Replace(s)
@@ -269,7 +289,7 @@ func textFindings(w io.Writer, r Result, verbose bool) error {
 		if u.Unfixed > 0 {
 			fixes += fmt.Sprintf(" (%d without a fix)", u.Unfixed)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t\n", u.Priority, u.Package.Name, u.Package.Version, to, fixes)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t\n", u.Priority, pkgName(u.Package), u.Package.Version, to, fixes)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -294,7 +314,7 @@ func textFindings(w io.Writer, r Result, verbose bool) error {
 			id += " (KEV)"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
-			f.Priority, id, f.Package.Name, f.Package.Version, fix, sev, epss)
+			f.Priority, id, pkgName(f.Package), f.Package.Version, fix, sev, epss)
 	}
 	if err := tw.Flush(); err != nil {
 		return err

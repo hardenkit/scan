@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/hardenkit/scan/internal/aistack"
 	"github.com/hardenkit/scan/internal/enrich"
@@ -54,6 +55,8 @@ Flags:
   --no-ai              skip the AI-stack checks (MCP configs, model files,
                        risky model-loading code)
   --no-k8s             skip the Kubernetes manifest and Helm chart checks
+  --images             also scan every container image the Kubernetes
+                       manifests deploy (pulled from their registries)
   --summary-file PATH  also append a Markdown report to PATH (e.g.
                        "$GITHUB_STEP_SUMMARY")
   -v, --verbose        show summaries, file locations and advisory links
@@ -116,10 +119,15 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	noDB := fs.Bool("no-db", false, "")
 	noAI := fs.Bool("no-ai", false, "")
 	noK8s := fs.Bool("no-k8s", false, "")
+	images := fs.Bool("images", false, "")
 	summaryFile := fs.String("summary-file", "", "")
 	verbose := fs.Bool("verbose", false, "")
 	fs.BoolVar(verbose, "v", false, "")
 	if err := fs.Parse(args); err != nil {
+		return exitError
+	}
+	if *images && *noK8s {
+		fmt.Fprintln(stderr, "--images needs the Kubernetes checks; drop --no-k8s")
 		return exitError
 	}
 	if *format != "text" && *format != "json" && *format != "markdown" {
@@ -144,11 +152,48 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	// Progress and errors go to stderr so stdout stays clean for --format json.
 	logf := func(msg string, a ...any) { fmt.Fprintf(stderr, msg+"\n", a...) }
 
+	result := report.Result{Target: target, Sources: []string{"OSV.dev"}}
+	warn := func(msg string, a ...any) {
+		result.Warnings = append(result.Warnings, fmt.Sprintf(msg, a...))
+	}
+
 	logf("Cataloging packages in %s ...", target)
 	pkgs, err := inventory.Collect(ctx, target)
 	if err != nil {
 		logf("error: %v", err)
 		return exitError
+	}
+
+	// Kubernetes runs before matching so --images can add the packages of
+	// every image the manifests deploy.
+	if path := localPath(target); path != "" && !*noK8s {
+		k, err := kube.Scan(ctx, path)
+		if err != nil {
+			warn("Kubernetes checks failed: %v", err)
+		} else if k != nil {
+			logf("Checked %d Kubernetes resources ...", len(k.Resources))
+			result.Kubernetes = k
+			result.Warnings = append(result.Warnings, k.Warnings...)
+		}
+	}
+	if *images {
+		if result.Kubernetes == nil || len(result.Kubernetes.Images) == 0 {
+			warn("--images: no container images found in Kubernetes manifests")
+		} else {
+			got, failed, firstErr := collectImages(ctx, result.Kubernetes.Images, logf)
+			pkgs = append(pkgs, got...)
+			if len(failed) > 0 {
+				hint := ""
+				for _, img := range failed {
+					if !strings.Contains(img, "/") {
+						hint = ` Bare names such as "` + img + `" are usually placeholders a build tool (skaffold, kustomize) replaces.`
+						break
+					}
+				}
+				warn("could not pull %d of %d images: %s (first error: %s).%s",
+					len(failed), len(result.Kubernetes.Images), strings.Join(failed, ", "), firstErr, hint)
+			}
+		}
 	}
 
 	var targets []osv.Target
@@ -191,10 +236,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	}
 	cves := keys(cveSet)
 
-	result := report.Result{Target: target, Packages: len(pkgs), Sources: []string{"OSV.dev"}}
-	warn := func(msg string, a ...any) {
-		result.Warnings = append(result.Warnings, fmt.Sprintf(msg, a...))
-	}
+	result.Packages = len(pkgs)
 
 	// Enrichment makes the ranking better but is not required for a result,
 	// so a failing source becomes a warning instead of failing the scan.
@@ -294,16 +336,6 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		ai.Components = aistack.Components(pkgs)
 		result.AIStack = ai
 	}
-	if path := localPath(target); path != "" && !*noK8s {
-		k, err := kube.Scan(ctx, path)
-		if err != nil {
-			warn("Kubernetes checks failed: %v", err)
-		} else if k != nil {
-			logf("Checked %d Kubernetes resources ...", len(k.Resources))
-			result.Kubernetes = k
-			result.Warnings = append(result.Warnings, k.Warnings...)
-		}
-	}
 
 	switch *format {
 	case "json":
@@ -373,6 +405,66 @@ func failed(r report.Result, threshold string) bool {
 		}
 	}
 	return false
+}
+
+// imageWorkers is how many images are pulled and cataloged at once.
+const imageWorkers = 4
+
+// collectImages catalogs each image and tags its packages with the image
+// reference. It also returns the images that couldn't be pulled and the
+// first of their errors.
+func collectImages(ctx context.Context, images []string, logf func(string, ...any)) ([]inventory.Package, []string, string) {
+	type result struct {
+		pkgs []inventory.Package
+		err  error
+	}
+	results := make([]result, len(images))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < imageWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				logf("Cataloging image %s ...", images[i])
+				pkgs, err := inventory.CollectImage(ctx, images[i])
+				for j := range pkgs {
+					pkgs[j].Image = images[i]
+				}
+				results[i] = result{pkgs, err}
+			}
+		}()
+	}
+	for i := range images {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	var pkgs []inventory.Package
+	var failed []string
+	var firstErr string
+	for i, r := range results {
+		if r.err != nil {
+			failed = append(failed, images[i])
+			if firstErr == "" {
+				firstErr = lastLine(r.err.Error())
+			}
+			continue
+		}
+		pkgs = append(pkgs, r.pkgs...)
+	}
+	return pkgs, failed, firstErr
+}
+
+// lastLine returns the most specific line of a multi-line error, trimmed.
+func lastLine(msg string) string {
+	lines := strings.Split(strings.TrimSpace(msg), "\n")
+	line := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[len(lines)-1]), "-"))
+	if len(line) > 160 {
+		line = line[:160] + "..."
+	}
+	return line
 }
 
 // localPath returns the directory or file a target names, or "" when the

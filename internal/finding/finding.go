@@ -162,7 +162,8 @@ func UpgradePlan(fs []Finding) []Upgrade {
 	var out []Upgrade
 	idx := map[string]int{}
 	for _, f := range fs {
-		key := f.Package.PURL + "|" + f.Package.Name + "@" + f.Package.Version
+		// Each image needs its own rebuild, so the same package in two images is two upgrades.
+		key := f.Package.Image + "|" + f.Package.PURL + "|" + f.Package.Name + "@" + f.Package.Version
 		i, ok := idx[key]
 		if !ok {
 			i = len(out)

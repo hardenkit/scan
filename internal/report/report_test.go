@@ -45,3 +45,17 @@ func TestMarkdownClean(t *testing.T) {
 		t.Error(buf.String())
 	}
 }
+
+func TestPackageImageLabel(t *testing.T) {
+	p := inventory.Package{Name: "openssl"}
+	if got := pkgName(p); got != "openssl" {
+		t.Errorf("pkgName = %q", got)
+	}
+	p.Image = "nginx:1.27"
+	if got := pkgName(p); got != "openssl (in nginx:1.27)" {
+		t.Errorf("pkgName = %q", got)
+	}
+	if got := mdPkg(p); got != "`openssl` in `nginx:1.27`" {
+		t.Errorf("mdPkg = %q", got)
+	}
+}
