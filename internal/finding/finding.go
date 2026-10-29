@@ -59,7 +59,9 @@ func Build(
 	for _, p := range pkgs {
 		byKey := map[string]*Finding{}
 		var order []string
-		for _, id := range matches[osv.NormalizePURL(p.PURL)] {
+		t := osv.TargetFor(p.PURL, p.Name, p.Version)
+		cmp := comparator(t.Ecosystem)
+		for _, id := range matches[t.Key] {
 			v, ok := vulns[id]
 			if !ok {
 				continue
@@ -81,8 +83,8 @@ func Build(
 			if f.Severity == "UNKNOWN" && v.Severity() != "" {
 				f.Severity = v.Severity()
 			}
-			if fix := PickFix(p.Version, v.FixedVersions(p.Name)); fix != "" &&
-				(f.FixedIn == "" || CompareVersions(fix, f.FixedIn) > 0) {
+			if fix := pickFix(cmp, t.Version, v.FixedVersions(t.Name, t.Ecosystem)); fix != "" &&
+				(f.FixedIn == "" || cmp(fix, f.FixedIn) > 0) {
 				f.FixedIn = fix // the highest fix across advisories closes all of them
 			}
 			for _, r := range v.References {
@@ -173,7 +175,8 @@ func UpgradePlan(fs []Finding) []Upgrade {
 			continue
 		}
 		u.Fixes++
-		if u.UpgradeTo == "" || CompareVersions(f.FixedIn, u.UpgradeTo) > 0 {
+		cmp := comparator(osv.TargetFor(f.Package.PURL, f.Package.Name, f.Package.Version).Ecosystem)
+		if u.UpgradeTo == "" || cmp(f.FixedIn, u.UpgradeTo) > 0 {
 			u.UpgradeTo = f.FixedIn
 		}
 	}
@@ -183,16 +186,111 @@ func UpgradePlan(fs []Finding) []Upgrade {
 // PickFix returns the lowest fixed version above current, or "" if none is.
 // When the current version can't be compared, it falls back to the lowest fix.
 func PickFix(current string, fixes []string) string {
+	return pickFix(CompareVersions, current, fixes)
+}
+
+func pickFix(cmp func(a, b string) int, current string, fixes []string) string {
 	var best string
 	for _, f := range fixes {
-		if current != "" && CompareVersions(f, current) <= 0 {
+		if current != "" && cmp(f, current) <= 0 {
 			continue
 		}
-		if best == "" || CompareVersions(f, best) < 0 {
+		if best == "" || cmp(f, best) < 0 {
 			best = f
 		}
 	}
 	return best
+}
+
+// comparator returns the version ordering for an OSV ecosystem: dpkg's for
+// Debian and Ubuntu packages, the generic one otherwise.
+func comparator(ecosystem string) func(a, b string) int {
+	if strings.HasPrefix(ecosystem, "Debian:") || strings.HasPrefix(ecosystem, "Ubuntu:") {
+		return CompareDebian
+	}
+	return CompareVersions
+}
+
+// CompareDebian compares Debian package versions ([epoch:]upstream[-revision])
+// the way dpkg does: "~" sorts before everything, even the end of the string.
+func CompareDebian(a, b string) int {
+	ea, ua, ra := splitDebian(a)
+	eb, ub, rb := splitDebian(b)
+	if ea != eb {
+		if ea < eb {
+			return -1
+		}
+		return 1
+	}
+	if c := verrevcmp(ua, ub); c != 0 {
+		return c
+	}
+	return verrevcmp(ra, rb)
+}
+
+func splitDebian(v string) (epoch int, upstream, revision string) {
+	if i := strings.IndexByte(v, ':'); i >= 0 {
+		epoch, _ = strconv.Atoi(v[:i])
+		v = v[i+1:]
+	}
+	if i := strings.LastIndexByte(v, '-'); i >= 0 {
+		return epoch, v[:i], v[i+1:]
+	}
+	return epoch, v, ""
+}
+
+// verrevcmp is dpkg's comparison of one version part.
+func verrevcmp(a, b string) int {
+	order := func(s string, i int) int {
+		if i >= len(s) {
+			return 0
+		}
+		c := s[i]
+		switch {
+		case c == '~':
+			return -1
+		case c >= '0' && c <= '9':
+			return 0
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+			return int(c)
+		}
+		return int(c) + 256
+	}
+	isDigit := func(s string, i int) bool { return i < len(s) && s[i] >= '0' && s[i] <= '9' }
+	i, j := 0, 0
+	for i < len(a) || j < len(b) {
+		for (i < len(a) && !isDigit(a, i)) || (j < len(b) && !isDigit(b, j)) {
+			if oa, ob := order(a, i), order(b, j); oa != ob {
+				return oa - ob
+			}
+			i++
+			j++
+		}
+		for i < len(a) && a[i] == '0' {
+			i++
+		}
+		for j < len(b) && b[j] == '0' {
+			j++
+		}
+		first := 0
+		for isDigit(a, i) && isDigit(b, j) {
+			if first == 0 {
+				first = int(a[i]) - int(b[j])
+			}
+			i++
+			j++
+		}
+		if isDigit(a, i) {
+			return 1
+		}
+		if isDigit(b, j) {
+			return -1
+		}
+		if first != 0 {
+			return first
+		}
+	}
+	return 0
 }
 
 // CompareVersions compares two version strings segment by segment, treating

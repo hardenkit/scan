@@ -122,3 +122,33 @@ func TestUpgradePlanPicksHighestFixPerPackage(t *testing.T) {
 		t.Errorf("lodash upgrade = %+v", u)
 	}
 }
+
+func TestDebianVersions(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want int
+	}{
+		{"3.5.8-1~deb13u1", "3.5.7-1~deb13u3", 1},
+		{"3.5.7-1~deb13u3", "3.5.7-1~deb13u4", -1},
+		{"3.5.7-1~deb13u3", "3.5.7-1", -1}, // ~ sorts before the release
+		{"2.75-10+deb13u1+b3", "2.75-10+deb13u1", 1},
+		{"1:2.75-10", "2.80-1", 1}, // epoch wins
+		{"1.0", "1.0", 0},
+		{"1.0a", "1.0", 1},
+		{"8.14.1-2+deb13u7", "8.14.1-2+deb13u10", -1},
+	} {
+		if got := CompareDebian(c.a, c.b); sign(got) != c.want {
+			t.Errorf("CompareDebian(%q, %q) = %d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func sign(n int) int {
+	switch {
+	case n > 0:
+		return 1
+	case n < 0:
+		return -1
+	}
+	return 0
+}

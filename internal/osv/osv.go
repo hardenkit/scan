@@ -93,10 +93,15 @@ func (v *Vuln) Severity() string {
 }
 
 // FixedVersions returns every "fixed" version listed for the named package.
-func (v *Vuln) FixedVersions(pkgName string) []string {
+// With an ecosystem (e.g. "Debian:13"), only that ecosystem's entries count,
+// so one Debian release's fix isn't offered for another.
+func (v *Vuln) FixedVersions(pkgName, ecosystem string) []string {
 	var out []string
 	for _, a := range v.Affected {
 		if !strings.EqualFold(a.Package.Name, pkgName) {
+			continue
+		}
+		if ecosystem != "" && a.Package.Ecosystem != ecosystem {
 			continue
 		}
 		for _, r := range a.Ranges {
@@ -110,12 +115,16 @@ func (v *Vuln) FixedVersions(pkgName string) []string {
 	return out
 }
 
-// Query returns the OSV IDs affecting each purl, keyed by purl.
-func Query(ctx context.Context, purls []string) (map[string][]string, error) {
+// Query returns the OSV IDs affecting each target, keyed by Target.Key.
+func Query(ctx context.Context, targets []Target) (map[string][]string, error) {
+	type pkg struct {
+		PURL      string `json:"purl,omitempty"`
+		Ecosystem string `json:"ecosystem,omitempty"`
+		Name      string `json:"name,omitempty"`
+	}
 	type query struct {
-		Package struct {
-			PURL string `json:"purl"`
-		} `json:"package"`
+		Package pkg    `json:"package"`
+		Version string `json:"version,omitempty"`
 	}
 	type result struct {
 		Vulns []struct {
@@ -124,17 +133,19 @@ func Query(ctx context.Context, purls []string) (map[string][]string, error) {
 	}
 
 	out := map[string][]string{}
-	for start := 0; start < len(purls); start += batchSize {
-		end := min(start+batchSize, len(purls))
-		chunk := purls[start:end]
+	for start := 0; start < len(targets); start += batchSize {
+		end := min(start+batchSize, len(targets))
+		chunk := targets[start:end]
 
 		body := struct {
 			Queries []query `json:"queries"`
 		}{}
-		for _, p := range chunk {
-			var q query
-			q.Package.PURL = p
-			body.Queries = append(body.Queries, q)
+		for _, t := range chunk {
+			if t.Ecosystem != "" {
+				body.Queries = append(body.Queries, query{Package: pkg{Ecosystem: t.Ecosystem, Name: t.Name}, Version: t.Version})
+			} else {
+				body.Queries = append(body.Queries, query{Package: pkg{PURL: t.PURL}})
+			}
 		}
 		buf, err := json.Marshal(body)
 		if err != nil {
@@ -154,7 +165,7 @@ func Query(ctx context.Context, purls []string) (map[string][]string, error) {
 		}
 		for i, r := range resp.Results {
 			for _, v := range r.Vulns {
-				out[chunk[i]] = append(out[chunk[i]], v.ID)
+				out[chunk[i].Key] = append(out[chunk[i].Key], v.ID)
 			}
 		}
 	}

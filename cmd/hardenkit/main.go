@@ -151,21 +151,21 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		return exitError
 	}
 
-	var purls []string
+	var targets []osv.Target
 	seen := map[string]bool{}
 	for _, p := range pkgs {
 		if p.PURL == "" || p.Version == "" {
 			continue
 		}
-		n := osv.NormalizePURL(p.PURL)
-		if !seen[n] {
-			seen[n] = true
-			purls = append(purls, n)
+		t := osv.TargetFor(p.PURL, p.Name, p.Version)
+		if !seen[t.Key] {
+			seen[t.Key] = true
+			targets = append(targets, t)
 		}
 	}
 
-	logf("Matching %d packages against OSV.dev ...", len(purls))
-	matches, err := osv.Query(ctx, purls)
+	logf("Matching %d packages against OSV.dev ...", len(targets))
+	matches, err := osv.Query(ctx, targets)
 	if err != nil {
 		logf("error: %v", err)
 		return exitError
