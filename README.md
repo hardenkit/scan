@@ -13,7 +13,7 @@ Most scanners hand you a list of hundreds of CVEs. `hardenkit scan` ranks them b
 
 Then it collapses them into an **upgrade plan**: one line per package with the single version that resolves every fixable finding.
 
-It also checks your **AI stack** (the LLM SDKs, agent frameworks, vector databases, MCP servers and model files in the project, and the settings that let one of them take over a machine) and your **Kubernetes manifests and Helm charts**.
+It also checks your **AI stack** (the LLM SDKs, agent frameworks, vector databases, MCP servers and model files in the project, and the settings that let one of them take over a machine) your **Kubernetes manifests and Helm charts**, and your **GitHub Actions workflows**.
 
 > Status: early development. Not yet released.
 
@@ -28,11 +28,12 @@ hardenkit scan --fail-on high .     # exit 1 on high/critical or exploited findi
 hardenkit scan -v .                 # include summaries, file locations and advisory links
 hardenkit scan --no-ai .            # skip the AI-stack checks
 hardenkit scan --no-k8s .           # skip the Kubernetes checks
+hardenkit scan --no-actions .       # skip the GitHub Actions checks
 hardenkit scan --images .           # also scan every image the Kubernetes manifests deploy
 hardenkit scan --ignore-unfixed .   # leave out vulnerabilities with no fix yet
 ```
 
-Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` the scan itself failed. AI-stack and Kubernetes issues count toward `--fail-on` at their severity, except with `--fail-on kev`, which only fails on exploited vulnerabilities.
+Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` the scan itself failed. AI-stack, Kubernetes and GitHub Actions issues count toward `--fail-on` at their severity, except with `--fail-on kev`, which only fails on exploited vulnerabilities.
 
 ## Install
 
@@ -123,6 +124,24 @@ The scan reads Kubernetes manifests (`.yaml`/`.yml`, including multi-document fi
 | `k8s-hardening` | Low | Writable root filesystem, no memory limit |
 
 The report also lists the images the workloads run. `--images` pulls each one from its registry (four at a time) and adds its packages to the scan; findings and upgrade rows name the image to rebuild. Private registries use your Docker credentials (`~/.docker/config.json`). Images that can't be pulled are listed in a warning.
+
+### GitHub Actions
+
+The scan reads workflows in `.github/workflows` and composite actions (`action.yml`).
+
+| Check | Severity | What it finds |
+|:------|:---------|:--------------|
+| `gha-untrusted-checkout` | Critical / High / Medium | `pull_request_target`, `issue_comment` or `workflow_run` jobs that check out pull request code: critical when a later step runs it, with the repository's secrets; one level lower when an `if:` checks who triggered the run first |
+| `gha-script-injection` | Critical / High | `${{ }}` expressions that paste text anyone can set (pull request titles, branch names, issue and comment bodies, commit messages) into `run:` scripts or `actions/github-script`; critical on triggers that hold secrets |
+| `gha-write-all` | High / Medium | `permissions: write-all`; high on those triggers |
+| `gha-hardcoded-secret` | High | Secrets written into `env` or action inputs |
+| `gha-unsecure-commands` | High | `ACTIONS_ALLOW_UNSECURE_COMMANDS: true` |
+| `gha-unpinned-action` | Medium | Third-party actions and reusable workflows referenced by tag or branch instead of a commit SHA, and `docker://` images without a digest. Actions from `actions/` and `github/` are left out |
+| `gha-secrets-inherit` | Medium | `secrets: inherit` passed to a workflow in another repository |
+| `gha-default-permissions` | Low | Workflows that don't set `permissions`, so the token gets the repository default |
+| `gha-remote-script` | Low | `curl ... \| sh` in a `run:` step |
+
+Actions are also matched against [GitHub's advisories for actions](https://github.com/advisories?query=ecosystem%3Aactions), so a compromised release such as `tj-actions/changed-files@v45` (CVE-2025-30066, exploited in the wild) shows up in the upgrade plan. A tag without a patch number (`@v45`) moves with each release, so it's compared as the newest release of that line. SHA-pinned actions are matched by the version in their trailing comment (`@<sha> # v4.2.0`). Actions referenced by branch can't be matched.
 
 ### Container images
 
