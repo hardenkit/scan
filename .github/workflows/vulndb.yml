@@ -34,12 +34,25 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # A copy of the last build, in case the release asset is missing
+      # (an upload that failed after --clobber removed the old file).
+      - name: Restore cached database
+        if: ${{ !inputs.full }}
+        uses: actions/cache/restore@v6
+        with:
+          path: cached/enrichment.json.gz
+          key: vulndb-${{ github.run_id }}
+          restore-keys: vulndb-
+
       - name: Download previous database
         id: previous
         if: ${{ !inputs.full }}
         run: |
           if gh release download db --pattern enrichment.json.gz --dir previous 2>/dev/null; then
             echo "path=previous/enrichment.json.gz" >> "$GITHUB_OUTPUT"
+          elif [ -f cached/enrichment.json.gz ]; then
+            echo "Release asset missing; using the cached database."
+            echo "path=cached/enrichment.json.gz" >> "$GITHUB_OUTPUT"
           else
             echo "No previous database; doing a full build."
           fi
@@ -50,6 +63,17 @@ jobs:
           PREVIOUS: ${{ steps.previous.outputs.path }}
         run: go run ./cmd/vulndb-build ${PREVIOUS:+--previous "$PREVIOUS"} --out enrichment.json.gz
 
+      - name: Cache database
+        run: mkdir -p cached && cp enrichment.json.gz cached/
+
+      - name: Save cached database
+        uses: actions/cache/save@v6
+        with:
+          path: cached/enrichment.json.gz
+          key: vulndb-${{ github.run_id }}
+
+      # --clobber deletes the old asset before uploading, so a failed upload
+      # leaves the release empty: retry, then check both files are there.
       - name: Publish
         run: |
           sha256sum enrichment.json.gz > enrichment.json.gz.sha256
@@ -58,4 +82,14 @@ jobs:
               --title "Vulnerability database" \
               --notes "Rolling daily build of the enrichment database used by \`hardenkit scan\` (NVD CVSS, CISA KEV, FIRST EPSS). Not a software release."
           fi
-          gh release upload db enrichment.json.gz enrichment.json.gz.sha256 --clobber
+          for attempt in 1 2 3 4 5; do
+            if gh release upload db enrichment.json.gz enrichment.json.gz.sha256 --clobber; then
+              break
+            fi
+            echo "Upload failed (attempt $attempt); retrying in $((attempt * 30))s."
+            sleep $((attempt * 30))
+          done
+          assets=$(gh release view db --json assets -q '.assets[].name')
+          for f in enrichment.json.gz enrichment.json.gz.sha256; do
+            grep -qx "$f" <<<"$assets" || { echo "::error::$f is missing from the db release"; exit 1; }
+          done
