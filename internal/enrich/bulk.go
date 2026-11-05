@@ -148,10 +148,11 @@ func nvdPages(ctx context.Context, apiKey string, q url.Values, fn func(NVDChang
 	return nil
 }
 
-// withRetry retries transient failures (NVD returns 403/429/5xx under load)
-// with increasing waits, up to about four minutes in total.
+// withRetry retries transient failures (NVD returns 403/429/5xx or stops
+// answering under load) with increasing waits, about 20 minutes in total, so
+// a full download of every CVE survives an NVD slowdown.
 func withRetry(ctx context.Context, f func() error) error {
-	waits := []time.Duration{6 * time.Second, 15 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second}
+	waits := []time.Duration{6 * time.Second, 15 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second, 240 * time.Second, 300 * time.Second, 300 * time.Second}
 	var err error
 	for i := 0; ; i++ {
 		if err = f(); err == nil || i == len(waits) || ctx.Err() != nil {
