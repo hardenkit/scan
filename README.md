@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
+  <img src=".github/assets/logo-light.svg" alt="HardenKit" width="56" height="56">
+</picture>
+
 # hardenkit scan
 
 Find the vulnerabilities that matter in your dependencies and containers, and the one upgrade that fixes them.
