@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs the hardenkit CLI.
 #
-#   curl -sSfL https://hardenkit.sh | sh
+#   curl -sSfL https://hardenkit.com/install.sh | sh
 #
 # Environment:
 #   HARDENKIT_VERSION       version to install (default: latest release)

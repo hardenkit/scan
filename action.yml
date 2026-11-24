@@ -3,7 +3,7 @@ description: Find the vulnerabilities that matter in your dependencies and conta
 author: HardenKit
 branding:
   icon: shield
-  color: green
+  color: blue
 
 inputs:
   target:

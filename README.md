@@ -15,7 +15,7 @@ Then it collapses them into an **upgrade plan**: one line per package with the s
 
 It also checks your **AI stack** (the LLM SDKs, agent frameworks, vector databases, MCP servers and model files in the project, and the settings that let one of them take over a machine) your **Kubernetes manifests and Helm charts**, and your **GitHub Actions workflows**.
 
-> Status: early development. Not yet released.
+Docs: [hardenkit.com/docs](https://hardenkit.com/docs) · Site: [hardenkit.com](https://hardenkit.com)
 
 ## Usage
 
@@ -38,7 +38,7 @@ Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` t
 ## Install
 
 ```bash
-curl -sSfL https://hardenkit.sh | sh
+curl -sSfL https://hardenkit.com/install.sh | sh
 ```
 
 Or download a build for your platform from [Releases](https://github.com/hardenkit/scan/releases).
