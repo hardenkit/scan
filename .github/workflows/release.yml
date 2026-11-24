@@ -6,7 +6,8 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    # Version tags only. The moving major tag the action is used by (v0) has no dots.
+    tags: ["v*.*.*"]
 
 permissions:
   contents: write
