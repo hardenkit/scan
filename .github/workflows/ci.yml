@@ -18,3 +18,13 @@ jobs:
           go-version-file: go.mod
       - run: make check
       - run: make build
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the container image and run it
+        run: |
+          docker build --build-arg VERSION=ci -t hardenkit-scan:ci .
+          docker run --rm hardenkit-scan:ci version
+          docker run --rm -v "$PWD/testdata:/src:ro" hardenkit-scan:ci scan --no-nvd /src

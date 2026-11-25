@@ -3,6 +3,8 @@ name: Release
 # Builds hardenkit for every supported platform when a version tag is pushed
 # (e.g. v0.1.0) and publishes the archives plus a checksums file to a GitHub
 # release. Tags with a hyphen (v0.1.0-alpha.1) are marked as pre-releases.
+# It also pushes the container image ghcr.io/hardenkit/scan for linux/amd64
+# and linux/arm64, tagged with the version and, for full releases, "latest".
 
 on:
   push:
@@ -11,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -69,3 +72,24 @@ jobs:
           case "$GITHUB_REF_NAME" in *-*) flags="--prerelease";; esac
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" --generate-notes --verify-tag $flags *
+
+  image:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to the registry
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          tags="-t ghcr.io/hardenkit/scan:$version"
+          case "$GITHUB_REF_NAME" in *-*) ;; *) tags="$tags -t ghcr.io/hardenkit/scan:latest";; esac
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --build-arg "VERSION=$version" \
+            --label "org.opencontainers.image.source=https://github.com/hardenkit/scan" \
+            --label "org.opencontainers.image.description=Open-source vulnerability scanner that ranks findings by real attacks" \
+            --label "org.opencontainers.image.licenses=Apache-2.0" \
+            $tags --push .
