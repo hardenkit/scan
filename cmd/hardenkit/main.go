@@ -102,6 +102,9 @@ Watch flags:
                        ~/.local/state/hardenkit/watch.json)
   --webhook URL        POST each alert as JSON to URL
   --slack URL          send each alert to a Slack incoming webhook
+  --report-to URL      also send every scan to a HardenKit dashboard at URL
+                       (its API address); needs --project and HARDENKIT_TOKEN
+  --project ID         the dashboard project the reports belong to
   --ignore-unfixed, --no-db, --no-nvd, --no-ai, --no-k8s, --no-actions and
   --images work as they do for scan.
 
@@ -111,6 +114,7 @@ Environment:
                             limit from 5 to 50 requests per 30 seconds
   HARDENKIT_WATCH_WEBHOOK   same as watch --webhook
   HARDENKIT_SLACK_WEBHOOK   same as watch --slack
+  HARDENKIT_TOKEN           dashboard API key for watch --report-to
 
 Other commands:
   hardenkit version

@@ -56,6 +56,11 @@ func GetJSON(ctx context.Context, url string, header http.Header, out any) error
 // Webhook URLs are secrets, so errors name only the host: never the path,
 // the query or the response body, which can repeat the path.
 func PostJSON(ctx context.Context, rawURL string, body any) error {
+	return PostJSONWith(ctx, rawURL, nil, body)
+}
+
+// PostJSONWith is PostJSON with extra request headers.
+func PostJSONWith(ctx context.Context, rawURL string, header http.Header, body any) error {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return errors.New("POST: not an http or https URL")
@@ -67,6 +72,9 @@ func PostJSON(ctx context.Context, rawURL string, body any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("POST %s: invalid request", u.Host)
+	}
+	for k, vs := range header {
+		req.Header[k] = vs
 	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Content-Type", "application/json")

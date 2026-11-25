@@ -29,6 +29,8 @@ type watcher struct {
 	state     *watch.State
 	webhook   string
 	slack     string
+	reportURL string // where reports go on a dashboard; "" when not reporting
+	token     string
 	host      string
 	stdout    io.Writer
 	stderr    io.Writer
@@ -51,6 +53,8 @@ func watchCmd(args []string, stdout, stderr io.Writer) int {
 	statePath := fs.String("state", "", "")
 	webhook := fs.String("webhook", os.Getenv("HARDENKIT_WATCH_WEBHOOK"), "")
 	slack := fs.String("slack", os.Getenv("HARDENKIT_SLACK_WEBHOOK"), "")
+	reportTo := fs.String("report-to", "", "")
+	project := fs.String("project", "", "")
 	noNVD := fs.Bool("no-nvd", false, "")
 	noDB := fs.Bool("no-db", false, "")
 	noAI := fs.Bool("no-ai", false, "")
@@ -81,6 +85,22 @@ func watchCmd(args []string, stdout, stderr io.Writer) int {
 			return exitError
 		}
 	}
+	var reportURL string
+	token := os.Getenv("HARDENKIT_TOKEN")
+	if *reportTo != "" || *project != "" {
+		if *reportTo == "" || *project == "" {
+			fmt.Fprintln(stderr, "--report-to and --project go together")
+			return exitError
+		}
+		if token == "" {
+			fmt.Fprintln(stderr, "--report-to needs an API key in HARDENKIT_TOKEN")
+			return exitError
+		}
+		if reportURL, err = watch.ReportURL(*reportTo, *project); err != nil {
+			fmt.Fprintf(stderr, "--report-to %v\n", err)
+			return exitError
+		}
+	}
 	if *statePath == "" {
 		if *statePath, err = watch.DefaultStatePath(); err != nil {
 			fmt.Fprintf(stderr, "error: no default state file (%v); set --state\n", err)
@@ -108,6 +128,8 @@ func watchCmd(args []string, stdout, stderr io.Writer) int {
 		state:     state,
 		webhook:   *webhook,
 		slack:     *slack,
+		reportURL: reportURL,
+		token:     token,
 		stdout:    stdout,
 		stderr:    stderr,
 	}
@@ -174,6 +196,20 @@ func (w *watcher) pass(ctx context.Context) (failed bool) {
 
 		current := watch.FromScan(result.Findings)
 		now := time.Now().UTC().Truncate(time.Second)
+
+		// The dashboard gets every scan, changed or not, so it can tell a
+		// quiet server from one that stopped reporting.
+		if w.reportURL != "" {
+			report, truncated := watch.NewReport(version, w.host, t.name, now, result.Packages, result.Findings)
+			if truncated > 0 {
+				logf("warning: %s: the report holds the %d most urgent findings; %d were left out", t.name, len(report.Findings), truncated)
+			}
+			if err := watch.SendReport(ctx, w.reportURL, w.token, report); err != nil {
+				logf("error: report for %s: %v", t.name, err)
+				failed = true
+			}
+		}
+
 		change := watch.Diff(w.state.Targets[t.name], current, w.alertOn)
 		change.Host, change.Target, change.Time = w.host, t.name, now
 

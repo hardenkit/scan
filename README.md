@@ -193,6 +193,24 @@ WantedBy=timers.target
 
 `version` changes only if a field is removed or changes meaning. `target` is the absolute path for a directory. `time` is RFC 3339, in UTC. `new`, `raised` and `resolved` are always arrays and hold the same finding objects: `version` is the installed version, `fixed_in` is `""` when there is no fix yet, `priority` is `fix_now`, `fix_soon`, `plan` or `backlog`, `severity` is `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` or `UNKNOWN`, `kev` says whether the vulnerability is on CISA KEV, and `epss` is the EPSS probability from 0 to 1 or `null` when unknown. A finding from an image scanned with `--images` also has `image`; a raised finding also has `previous_priority`. `summary` counts all of the target's current findings by priority. Any 2xx response counts as delivered.
 
+### Report to a dashboard
+
+`hardenkit watch` works on its own. It can also send every scan to a HardenKit dashboard, so a team sees all its servers in one place:
+
+```bash
+export HARDENKIT_TOKEN=<an API key with the "Scans: write" permission>
+hardenkit watch --report-to https://api.hardenkit.com --project <project id> /srv/app
+```
+
+| Flag | Meaning |
+|:-----|:--------|
+| `--report-to URL` | The dashboard's API address. Needs `--project` and `HARDENKIT_TOKEN`. |
+| `--project ID` | The dashboard project the reports belong to. |
+
+A report is sent after every scan, also when nothing changed, so the dashboard can tell a quiet server from one that stopped reporting. It holds the host name, the target's name, the number of packages, and for each finding its ID, advisories, one-line summary, package name and version, fixed version, priority, severity, CVSS score, EPSS score and whether it is exploited. It never holds source code, file contents or the paths of files inside the target. At most 5,000 findings are sent, the most urgent first.
+
+If a report can't be delivered, the error goes to stderr (naming only the host), alerts still go out, and with `--once` the exit code is `2`. The API key is never printed.
+
 ## What it checks
 
 Packages are found with [Syft](https://github.com/anchore/syft), which covers npm, PyPI, Go, Maven, Cargo, RubyGems, NuGet, Composer, and Linux distribution packages (Debian, Alpine, RPM) in container images.
