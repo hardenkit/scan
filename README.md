@@ -73,6 +73,126 @@ export HARDENKIT_NVD_API_KEY=your-key
 
 `HARDENKIT_DB_URL` points the CLI at a different database (an https URL or a local file), for example a mirror inside an air-gapped network.
 
+## Watch a server
+
+`hardenkit watch` rescans one or more targets on a schedule and sends an alert when a vulnerability is new or has become more urgent since the last run, for example when it is added to CISA KEV.
+
+```bash
+hardenkit watch /srv/app                        # scan now, then every 24 hours, until interrupted
+hardenkit watch --every 6h /srv/app nginx:1.27  # several targets, every 6 hours
+hardenkit watch --once /srv/app                 # one pass, then exit (for cron and systemd timers)
+```
+
+Targets are what `hardenkit scan` accepts: directories and container images. The default is the current directory.
+
+| Flag | Meaning |
+|:-----|:--------|
+| `--every DURATION` | Time between runs. Default `24h`, minimum `10m`. |
+| `--once` | Run one pass and exit. |
+| `--alert-on PRIORITY` | Least urgent priority that alerts: `fix_now`, `fix_soon` (default), `plan` or `backlog`. |
+| `--state FILE` | Where the last results are kept. Default `$XDG_STATE_HOME/hardenkit/watch.json`, or `~/.local/state/hardenkit/watch.json`. |
+| `--webhook URL` | POST each alert as JSON to URL. Also read from `HARDENKIT_WATCH_WEBHOOK`. |
+| `--slack URL` | Send each alert to a Slack incoming webhook. Also read from `HARDENKIT_SLACK_WEBHOOK`. The same message format works for Discord (add `/slack` to the webhook URL) and Mattermost. |
+| `--ignore-unfixed`, `--no-db`, `--no-nvd`, `--no-ai`, `--no-k8s`, `--no-actions`, `--images` | As for `hardenkit scan`. |
+
+Each pass compares every target with its saved results:
+
+- **New**: a finding at or above the alert priority that was not there before. A finding is a vulnerability ID in one package version (and one image, with `--images`).
+- **Raised**: a finding that was there at a less urgent priority and is now at or above the alert priority.
+- **Resolved**: a finding at or above the alert priority that is gone. Resolved findings are listed in an alert but never cause one.
+
+The first run for a target alerts on everything at or above the alert priority and says it is the first run. When nothing is new or raised, no webhook is called and one line saying so goes to stdout. A summary of every alert always goes to stdout; it lists up to 10 findings, the webhook JSON has all of them.
+
+Alerts cover vulnerabilities only. The AI-stack, Kubernetes and GitHub Actions checks are not part of alerts in this version.
+
+If a scan fails, the error goes to stderr, the saved results for that target stay as they were and the other targets are still scanned. If an alert can't be delivered, the results are not saved, so the next pass sends it again. With `--once` the exit code is `0` when every scan and alert worked, also when alerts were sent, and `2` otherwise. Without `--once`, the command runs until it gets SIGINT or SIGTERM and then exits `0`.
+
+Webhook URLs are secrets. They are never printed; errors name only the host. Prefer the environment variables over the flags, which other users on the machine can see in the process list.
+
+### Cron
+
+```
+HARDENKIT_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+17 6 * * * /usr/local/bin/hardenkit watch --once /srv/app
+```
+
+### systemd
+
+`/etc/systemd/system/hardenkit-watch.service`:
+
+```ini
+[Unit]
+Description=HardenKit Watch
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+StateDirectory=hardenkit
+EnvironmentFile=/etc/hardenkit/watch.env
+ExecStart=/usr/local/bin/hardenkit watch --once --state /var/lib/hardenkit/watch.json /srv/app
+```
+
+`/etc/systemd/system/hardenkit-watch.timer`:
+
+```ini
+[Unit]
+Description=Run HardenKit Watch every day
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+`/etc/hardenkit/watch.env` holds `HARDENKIT_WATCH_WEBHOOK=...` or `HARDENKIT_SLACK_WEBHOOK=...` and should be readable by root only. Start it with `systemctl enable --now hardenkit-watch.timer`.
+
+### Webhook JSON
+
+`--webhook` gets one POST per target with something new or raised:
+
+```json
+{
+  "version": 1,
+  "host": "web-1",
+  "target": "/srv/app",
+  "time": "2026-01-02T03:04:05Z",
+  "first_run": false,
+  "new": [
+    {
+      "id": "CVE-2023-44487",
+      "package": "golang.org/x/net",
+      "version": "0.1.0",
+      "fixed_in": "0.17.0",
+      "priority": "fix_now",
+      "severity": "MEDIUM",
+      "kev": true,
+      "epss": 0.9321
+    }
+  ],
+  "raised": [
+    {
+      "id": "CVE-2022-34265",
+      "package": "django",
+      "version": "3.2.0",
+      "fixed_in": "3.2.14",
+      "priority": "fix_soon",
+      "severity": "HIGH",
+      "kev": false,
+      "epss": null,
+      "previous_priority": "plan"
+    }
+  ],
+  "resolved": [],
+  "summary": { "fix_now": 1, "fix_soon": 1, "plan": 0, "backlog": 12 }
+}
+```
+
+`version` changes only if a field is removed or changes meaning. `target` is the absolute path for a directory. `time` is RFC 3339, in UTC. `new`, `raised` and `resolved` are always arrays and hold the same finding objects: `version` is the installed version, `fixed_in` is `""` when there is no fix yet, `priority` is `fix_now`, `fix_soon`, `plan` or `backlog`, `severity` is `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` or `UNKNOWN`, `kev` says whether the vulnerability is on CISA KEV, and `epss` is the EPSS probability from 0 to 1 or `null` when unknown. A finding from an image scanned with `--images` also has `image`; a raised finding also has `previous_priority`. `summary` counts all of the target's current findings by priority. Any 2xx response counts as delivered.
+
 ## What it checks
 
 Packages are found with [Syft](https://github.com/anchore/syft), which covers npm, PyPI, Go, Maven, Cargo, RubyGems, NuGet, Composer, and Linux distribution packages (Debian, Alpine, RPM) in container images.

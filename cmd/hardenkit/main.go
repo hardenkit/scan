@@ -41,6 +41,7 @@ const usage = `hardenkit finds the vulnerabilities that matter in your dependenc
 
 Usage:
   hardenkit scan [flags] [target]
+  hardenkit watch [flags] [target ...]
 
 Target is a directory (default "."), a file, or a container image such as
 "alpine:3.19" or "registry:ghcr.io/org/app:latest".
@@ -84,10 +85,32 @@ write-all tokens and secrets written into workflows.
 Severity scores, exploitation data (CISA KEV) and exploit likelihood (EPSS)
 come from a prebuilt database that is updated daily and cached locally.
 
+Watch rescans one or more targets on a schedule and sends an alert when a
+vulnerability is new, or has become more urgent, since the last run. It
+covers vulnerabilities only, not the AI-stack, Kubernetes and GitHub Actions
+checks.
+
+Watch flags:
+  --every DURATION     time between runs (default 24h, minimum 10m); runs
+                       until interrupted
+  --once               run one pass and exit, for cron and systemd timers;
+                       exits 2 if a scan or an alert failed
+  --alert-on PRIORITY  least urgent priority that alerts: fix_now, fix_soon
+                       (default), plan or backlog
+  --state FILE         where the last results are kept (default
+                       $XDG_STATE_HOME/hardenkit/watch.json, or
+                       ~/.local/state/hardenkit/watch.json)
+  --webhook URL        POST each alert as JSON to URL
+  --slack URL          send each alert to a Slack incoming webhook
+  --ignore-unfixed, --no-db, --no-nvd, --no-ai, --no-k8s, --no-actions and
+  --images work as they do for scan.
+
 Environment:
-  HARDENKIT_DB_URL        database location: an https URL or a local file
-  HARDENKIT_NVD_API_KEY   NVD API key for live lookups; raises the NVD rate
-                          limit from 5 to 50 requests per 30 seconds
+  HARDENKIT_DB_URL          database location: an https URL or a local file
+  HARDENKIT_NVD_API_KEY     NVD API key for live lookups; raises the NVD rate
+                            limit from 5 to 50 requests per 30 seconds
+  HARDENKIT_WATCH_WEBHOOK   same as watch --webhook
+  HARDENKIT_SLACK_WEBHOOK   same as watch --slack
 
 Other commands:
   hardenkit version
@@ -107,6 +130,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "scan":
 		return scan(args[1:], stdout, stderr)
+	case "watch":
+		return watchCmd(args[1:], stdout, stderr)
 	case "version", "--version":
 		fmt.Fprintln(stdout, "hardenkit", version)
 		return exitOK
@@ -164,6 +189,63 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	// Progress and errors go to stderr so stdout stays clean for --format json.
 	logf := func(msg string, a ...any) { fmt.Fprintf(stderr, msg+"\n", a...) }
 
+	result, err := runScan(ctx, target, scanOptions{
+		noNVD:         *noNVD,
+		noDB:          *noDB,
+		noAI:          *noAI,
+		noK8s:         *noK8s,
+		noActions:     *noActions,
+		images:        *images,
+		ignoreUnfixed: *ignoreUnfixed,
+	}, logf)
+	if err != nil {
+		logf("error: %v", err)
+		return exitError
+	}
+
+	switch *format {
+	case "json":
+		err = report.JSON(stdout, result)
+	case "markdown":
+		err = report.Markdown(stdout, result)
+	default:
+		err = report.Text(stdout, result, *verbose)
+	}
+	if err != nil {
+		logf("error: %v", err)
+		return exitError
+	}
+	if *summaryFile != "" {
+		if err := appendMarkdown(*summaryFile, result); err != nil {
+			logf("error: write summary: %v", err)
+			return exitError
+		}
+	}
+	if ctx.Err() != nil {
+		return exitError
+	}
+
+	if threshold != "" && failed(result, threshold) {
+		logf("\nFailing: findings at or above %s (--fail-on).", strings.ToLower(threshold))
+		return exitFindings
+	}
+	return exitOK
+}
+
+// scanOptions are the scanning switches shared by the scan and watch commands.
+type scanOptions struct {
+	noNVD         bool
+	noDB          bool
+	noAI          bool
+	noK8s         bool
+	noActions     bool
+	images        bool
+	ignoreUnfixed bool
+}
+
+// runScan runs the whole scanning pipeline on one target. Progress goes to
+// logf; sources that fail without failing the scan end up in Result.Warnings.
+func runScan(ctx context.Context, target string, opts scanOptions, logf func(string, ...any)) (report.Result, error) {
 	result := report.Result{Target: target, Sources: []string{"OSV.dev"}}
 	warn := func(msg string, a ...any) {
 		result.Warnings = append(result.Warnings, fmt.Sprintf(msg, a...))
@@ -173,21 +255,19 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	// tried as an image reference and fail with every provider's error.
 	if looksLikePath(target) {
 		if _, err := os.Stat(target); err != nil {
-			logf("error: %v", err)
-			return exitError
+			return result, err
 		}
 	}
 
 	logf("Cataloging packages in %s ...", target)
 	pkgs, err := inventory.Collect(ctx, target)
 	if err != nil {
-		logf("error: %v", err)
-		return exitError
+		return result, err
 	}
 
 	// Kubernetes runs before matching so --images can add the packages of
 	// every image the manifests deploy.
-	if path := localPath(target); path != "" && !*noK8s {
+	if path := localPath(target); path != "" && !opts.noK8s {
 		k, err := kube.Scan(ctx, path)
 		if err != nil {
 			warn("Kubernetes checks failed: %v", err)
@@ -197,7 +277,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 			result.Warnings = append(result.Warnings, k.Warnings...)
 		}
 	}
-	if *images {
+	if opts.images {
 		if result.Kubernetes == nil || len(result.Kubernetes.Images) == 0 {
 			warn("--images: no container images found in Kubernetes manifests")
 		} else {
@@ -233,8 +313,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	logf("Matching %d packages against OSV.dev ...", len(targets))
 	matches, err := osv.Query(ctx, targets)
 	if err != nil {
-		logf("error: %v", err)
-		return exitError
+		return result, err
 	}
 	idSet := map[string]bool{}
 	for _, ids := range matches {
@@ -245,8 +324,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	ids := keys(idSet)
 	vulns, err := osv.Fetch(ctx, ids)
 	if err != nil {
-		logf("error: %v", err)
-		return exitError
+		return result, err
 	}
 
 	cveSet := map[string]bool{}
@@ -267,7 +345,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		cvss map[string]enrich.CVSS
 		live = len(cves) > 0
 	)
-	if len(cves) > 0 && !*noDB {
+	if len(cves) > 0 && !opts.noDB {
 		src := os.Getenv("HARDENKIT_DB_URL")
 		if src == "" {
 			src = vulndb.DefaultURL
@@ -294,7 +372,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 				}
 			}
 			key := os.Getenv("HARDENKIT_NVD_API_KEY")
-			if len(missing) > 0 && !*noNVD && (key != "" || len(missing) <= 5) {
+			if len(missing) > 0 && !opts.noNVD && (key != "" || len(missing) <= 5) {
 				logf("Fetching CVSS scores from NVD for %d CVEs newer than the database ...", len(missing))
 				extra, err := enrich.NVD(ctx, missing, key)
 				if err != nil {
@@ -320,10 +398,10 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		}
 
 		key := os.Getenv("HARDENKIT_NVD_API_KEY")
-		if !*noNVD && key == "" && len(cves) > 10 {
+		if !opts.noNVD && key == "" && len(cves) > 10 {
 			// Keyless NVD allows one request every 6 seconds; don't stall the scan.
 			warn("skipped NVD CVSS scores for %d CVEs: live lookups without HARDENKIT_NVD_API_KEY would take about %d minutes", len(cves), (len(cves)*6+59)/60)
-		} else if !*noNVD {
+		} else if !opts.noNVD {
 			logf("Fetching CVSS scores from NVD ...")
 			if cvss, err = enrich.NVD(ctx, cves, key); err != nil {
 				warn("%v", err)
@@ -335,7 +413,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	}
 
 	result.Findings = finding.Build(pkgs, matches, vulns, kev, epss, cvss)
-	if *ignoreUnfixed {
+	if opts.ignoreUnfixed {
 		kept := result.Findings[:0]
 		for _, f := range result.Findings {
 			// Exploited vulnerabilities stay: they need a mitigation even without a fix.
@@ -355,7 +433,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		result.Upgrades = []finding.Upgrade{}
 	}
 
-	if !*noAI {
+	if !opts.noAI {
 		ai := aistack.New()
 		// Config, model and code checks need files on disk, so they don't
 		// run on container images; the package inventory works for both.
@@ -370,7 +448,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		result.AIStack = ai
 	}
 
-	if path := localPath(target); path != "" && !*noActions {
+	if path := localPath(target); path != "" && !opts.noActions {
 		logf("Checking GitHub Actions workflows ...")
 		gha, err := ghactions.Scan(ctx, path)
 		if err != nil {
@@ -379,33 +457,7 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		result.GitHubActions = gha
 	}
 
-	switch *format {
-	case "json":
-		err = report.JSON(stdout, result)
-	case "markdown":
-		err = report.Markdown(stdout, result)
-	default:
-		err = report.Text(stdout, result, *verbose)
-	}
-	if err != nil {
-		logf("error: %v", err)
-		return exitError
-	}
-	if *summaryFile != "" {
-		if err := appendMarkdown(*summaryFile, result); err != nil {
-			logf("error: write summary: %v", err)
-			return exitError
-		}
-	}
-	if ctx.Err() != nil {
-		return exitError
-	}
-
-	if threshold != "" && failed(result, threshold) {
-		logf("\nFailing: findings at or above %s (--fail-on).", strings.ToLower(threshold))
-		return exitFindings
-	}
-	return exitOK
+	return result, nil
 }
 
 // appendMarkdown appends a Markdown report to path; GitHub's step summary

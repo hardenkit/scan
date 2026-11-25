@@ -2,11 +2,14 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -47,4 +50,38 @@ func GetJSON(ctx context.Context, url string, header http.Header, out any) error
 		}
 	}
 	return Do(req, out)
+}
+
+// PostJSON sends body as JSON to rawURL and accepts any 2xx response.
+// Webhook URLs are secrets, so errors name only the host: never the path,
+// the query or the response body, which can repeat the path.
+func PostJSON(ctx context.Context, rawURL string, body any) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return errors.New("POST: not an http or https URL")
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("POST %s: invalid request", u.Host)
+	}
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err // url.Error prints the whole URL
+		}
+		return fmt.Errorf("POST %s: %v", u.Host, err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("POST %s: HTTP %d", u.Host, resp.StatusCode)
+	}
+	return nil
 }

@@ -166,3 +166,20 @@ func TestUpgradePlanPerImage(t *testing.T) {
 		t.Errorf("plan = %+v, want one upgrade per image", plan)
 	}
 }
+
+func TestPriorityTextRoundTrip(t *testing.T) {
+	for _, p := range []Priority{FixNow, FixSoon, Plan, Backlog} {
+		text, err := p.MarshalText()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got Priority
+		if err := got.UnmarshalText(text); err != nil || got != p {
+			t.Errorf("UnmarshalText(%q) = %v, %v; want %v", text, got, err, p)
+		}
+	}
+	var p Priority
+	if err := p.UnmarshalText([]byte("urgent")); err == nil {
+		t.Error("UnmarshalText accepted an unknown priority")
+	}
+}
