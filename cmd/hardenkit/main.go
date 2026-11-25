@@ -41,6 +41,7 @@ const usage = `hardenkit finds the vulnerabilities that matter in your dependenc
 
 Usage:
   hardenkit scan [flags] [target]
+  hardenkit watch [flags] [target ...]
 
 Target is a directory (default "."), a file, or a container image such as
 "alpine:3.19" or "registry:ghcr.io/org/app:latest".
@@ -84,10 +85,32 @@ write-all tokens and secrets written into workflows.
 Severity scores, exploitation data (CISA KEV) and exploit likelihood (EPSS)
 come from a prebuilt database that is updated daily and cached locally.
 
+Watch rescans one or more targets on a schedule and sends an alert when a
+vulnerability is new, or has become more urgent, since the last run. It
+covers vulnerabilities only, not the AI-stack, Kubernetes and GitHub Actions
+checks.
+
+Watch flags:
+  --every DURATION     time between runs (default 24h, minimum 10m); runs
+                       until interrupted
+  --once               run one pass and exit, for cron and systemd timers;
+                       exits 2 if a scan or an alert failed
+  --alert-on PRIORITY  least urgent priority that alerts: fix_now, fix_soon
+                       (default), plan or backlog
+  --state FILE         where the last results are kept (default
+                       $XDG_STATE_HOME/hardenkit/watch.json, or
+                       ~/.local/state/hardenkit/watch.json)
+  --webhook URL        POST each alert as JSON to URL
+  --slack URL          send each alert to a Slack incoming webhook
+  --ignore-unfixed, --no-db, --no-nvd, --no-ai, --no-k8s, --no-actions and
+  --images work as they do for scan.
+
 Environment:
-  HARDENKIT_DB_URL        database location: an https URL or a local file
-  HARDENKIT_NVD_API_KEY   NVD API key for live lookups; raises the NVD rate
-                          limit from 5 to 50 requests per 30 seconds
+  HARDENKIT_DB_URL          database location: an https URL or a local file
+  HARDENKIT_NVD_API_KEY     NVD API key for live lookups; raises the NVD rate
+                            limit from 5 to 50 requests per 30 seconds
+  HARDENKIT_WATCH_WEBHOOK   same as watch --webhook
+  HARDENKIT_SLACK_WEBHOOK   same as watch --slack
 
 Other commands:
   hardenkit version
@@ -107,6 +130,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "scan":
 		return scan(args[1:], stdout, stderr)
+	case "watch":
+		return watchCmd(args[1:], stdout, stderr)
 	case "version", "--version":
 		fmt.Fprintln(stdout, "hardenkit", version)
 		return exitOK
