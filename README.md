@@ -46,6 +46,12 @@ Exit codes: `0` no failing findings, `1` findings at or above `--fail-on`, `2` t
 curl -sSfL https://hardenkit.com/install.sh | sh
 ```
 
+With Homebrew, on macOS or Linux:
+
+```bash
+brew install hardenkit/tap/hardenkit
+```
+
 Or download a build for your platform from [Releases](https://github.com/hardenkit/scan/releases).
 
 ## GitHub Action
@@ -195,7 +201,7 @@ WantedBy=timers.target
 
 ### Report to a dashboard
 
-`hardenkit watch` works on its own. It can also send every scan to a HardenKit dashboard, so a team sees all its servers in one place:
+`hardenkit watch` works on its own. It can also send every scan to a HardenKit dashboard, so a team sees all its servers in one place: The hosted dashboard is not open yet; [join the waitlist](https://hardenkit.com/watch) to hear when it is.
 
 ```bash
 export HARDENKIT_TOKEN=<an API key with the "Scans: write" permission>
