@@ -61,7 +61,11 @@ type DatabaseSpecific struct {
 	Severity string `json:"severity"`
 }
 
-// CVE returns the record's CVE ID, from its ID or aliases, or "".
+// CVE returns the record's CVE ID: its own ID, a CVE alias, or, when it has
+// neither, the one CVE its advisory references point to on NVD. Some advisories
+// carry no alias because their own CVE was rejected as a duplicate (Next.js's
+// advisory for React2Shell, CVE-2025-55182); without this fallback they miss the
+// exploitation data of the CVE they describe.
 func (v *Vuln) CVE() string {
 	if strings.HasPrefix(v.ID, "CVE-") {
 		return v.ID
@@ -71,7 +75,29 @@ func (v *Vuln) CVE() string {
 			return a
 		}
 	}
-	return ""
+	return v.nvdCVE()
+}
+
+const nvdDetail = "https://nvd.nist.gov/vuln/detail/"
+
+// nvdCVE returns the CVE named by the record's NVD advisory references, or ""
+// when there is none or they name more than one.
+func (v *Vuln) nvdCVE() string {
+	var found string
+	for _, r := range v.References {
+		if r.Type != "ADVISORY" || !strings.HasPrefix(r.URL, nvdDetail) {
+			continue
+		}
+		id := strings.ToUpper(strings.Trim(strings.TrimPrefix(r.URL, nvdDetail), "/"))
+		if !strings.HasPrefix(id, "CVE-") || strings.ContainsAny(id, "/?#") {
+			continue
+		}
+		if found != "" && found != id {
+			return ""
+		}
+		found = id
+	}
+	return found
 }
 
 // Severity returns the advisory's own severity label (GHSA style), upper-cased, or "".
