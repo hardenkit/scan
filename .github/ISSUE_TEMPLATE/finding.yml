@@ -1,0 +1,33 @@
+name: Missed or wrong finding
+description: A vulnerability the scanner missed, reported by mistake, or ranked wrongly
+labels: [finding]
+body:
+  - type: input
+    id: package
+    attributes:
+      label: Package and version
+      placeholder: next 15.1.0 (npm)
+    validations:
+      required: true
+  - type: input
+    id: advisory
+    attributes:
+      label: Advisory or CVE
+      placeholder: CVE-2025-55182
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What the scanner said, and what you expected
+      description: The lines from `hardenkit scan -v` help. A small lockfile that reproduces it helps most.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `hardenkit version`
+    validations:
+      required: true

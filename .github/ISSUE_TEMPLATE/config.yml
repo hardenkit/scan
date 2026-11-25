@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/hardenkit/scan/security/advisories/new
+    about: Please report security problems in hardenkit privately, not in a public issue.
+  - name: Documentation
+    url: https://hardenkit.com/docs
+    about: Installation, usage and what each check means.
