@@ -2,6 +2,7 @@
 package finding
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,6 +29,18 @@ func (p Priority) String() string {
 
 func (p Priority) MarshalText() ([]byte, error) {
 	return []byte(strings.ReplaceAll(strings.ToLower(p.String()), " ", "_")), nil
+}
+
+// UnmarshalText reads the form MarshalText writes: fix_now, fix_soon, plan
+// or backlog.
+func (p *Priority) UnmarshalText(text []byte) error {
+	for _, c := range []Priority{FixNow, FixSoon, Plan, Backlog} {
+		if b, _ := c.MarshalText(); string(b) == string(text) {
+			*p = c
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown priority %q", text)
 }
 
 // Finding is one vulnerability affecting one package.
